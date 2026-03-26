@@ -1,0 +1,37 @@
+# Environment & secrets
+backend/.env
+backend/.env.*
+
+# Job outputs (large generated files)
+backend/jobs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+frontend/.env*.local
+
+# R
+*.Rhistory
+*.RData
+*.Rproj.user/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
