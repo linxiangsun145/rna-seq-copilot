@@ -119,7 +119,7 @@ def _run_pipeline(job_id: str, formula: str, contrast: list[str]) -> None:
             logger.warning("[%s] LLM interpretation failed: %s", job_id, exc)
 
         logger.info("[%s] Building HTML report…", job_id)
-        build_report(job_dir, summary, llm)
+        build_report(job_dir, summary, llm, formula=formula, contrast=contrast)
 
         update_job_status(
             job_id,

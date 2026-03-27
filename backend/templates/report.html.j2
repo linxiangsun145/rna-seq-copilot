@@ -3,202 +3,501 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RNA-seq Copilot Report</title>
+  <title>RNA-seq Scientific Report</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1a1a2e; background: #f8fafc; }
-    .wrapper { max-width: 960px; margin: 0 auto; padding: 40px 24px; }
-    h1 { font-size: 2rem; font-weight: 700; color: #1e40af; margin-bottom: 4px; }
-    h2 { font-size: 1.2rem; font-weight: 600; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; margin: 32px 0 12px; color: #1e293b; }
-    h3 { font-size: 1rem; font-weight: 600; color: #334155; margin-bottom: 6px; }
-    p { line-height: 1.7; color: #475569; font-size: 0.95rem; }
-    .meta { font-size: 0.8rem; color: #94a3b8; margin-bottom: 32px; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .card { background: white; border-radius: 12px; border: 1px solid #e2e8f0; padding: 16px; }
-    .card-label { font-size: 0.75rem; text-transform: uppercase; color: #94a3b8; margin-bottom: 4px; }
-    .card-value { font-size: 1.6rem; font-weight: 700; }
-    .up { color: #dc2626; }
-    .down { color: #2563eb; }
-    .green { color: #16a34a; }
-    .plots { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; margin-bottom: 24px; }
-    .plot-box { background: white; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; }
-    .plot-box-title { padding: 10px 16px; font-size: 0.85rem; font-weight: 600; border-bottom: 1px solid #e2e8f0; }
-    .plot-box img { width: 100%; display: block; }
-    .ai-section { background: linear-gradient(135deg, #f0f4ff, #faf0fe); border: 1px solid #c7d2fe; border-radius: 12px; padding: 24px; margin-bottom: 24px; }
-    .ai-block { background: white; border-radius: 8px; padding: 14px; margin-top: 12px; border: 1px solid #e2e8f0; }
-    .ai-block h3 { color: #4f46e5; margin-bottom: 8px; }
-    .warn-box { background: #fffbeb; border: 1px solid #fbbf24; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
-    .warn-box li { font-size: 0.85rem; color: #92400e; margin-left: 16px; list-style: disc; }
-    .tag { display: inline-block; padding: 2px 10px; background: #dbeafe; color: #1e40af; border-radius: 999px; font-size: 0.78rem; font-family: monospace; margin: 2px; }
-    .methods-box { background: white; border-radius: 8px; border: 1px solid #e2e8f0; padding: 16px; font-size: 0.9rem; color: #475569; line-height: 1.8; }
-    .footer { text-align: center; font-size: 0.75rem; color: #94a3b8; margin-top: 48px; padding-top: 16px; border-top: 1px solid #e2e8f0; }
+    :root {
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --line: #dbe4f0;
+      --text: #132035;
+      --muted: #5c6f8a;
+      --blue: #0f4bb8;
+      --green: #127c47;
+      --yellow-bg: #fff8dd;
+      --yellow-text: #8a6400;
+      --yellow-line: #f1d35c;
+      --red-bg: #fff1f2;
+      --red-text: #9f1239;
+      --red-line: #fda4af;
+      --ok-bg: #ecfdf3;
+      --ok-text: #166534;
+      --ok-line: #86efac;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+      color: var(--text);
+      background: linear-gradient(180deg, #f7f9fd 0%, #eef3fa 100%);
+      line-height: 1.55;
+    }
+    .container {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 20px 60px;
+    }
+    .header {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
+    }
+    .title {
+      margin: 0;
+      font-size: 28px;
+      color: #0e2b58;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+    .sub {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .section h2 {
+      margin: 0 0 12px;
+      font-size: 20px;
+      color: #112f5b;
+      border-bottom: 1px solid #e5ecf6;
+      padding-bottom: 8px;
+    }
+    .section h3 {
+      margin: 12px 0 8px;
+      font-size: 15px;
+      color: #1a3a67;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid #e4ebf4;
+      border-radius: 12px;
+      padding: 12px;
+      background: #fcfdff;
+    }
+    .card-label {
+      font-size: 11px;
+      color: #6c7f99;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 4px;
+    }
+    .card-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #0f2d56;
+      word-break: break-word;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid #d8e3f2;
+      background: #f4f8ff;
+      color: #1e3a65;
+      margin: 2px 4px 2px 0;
+    }
+    .tag-canonical {
+      background: #eef4ff;
+      border-color: #98b7f6;
+      color: #1e40af;
+    }
+    .tag-housekeeping {
+      background: #fef9ec;
+      border-color: #f8da84;
+      color: #9a6a00;
+    }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 9px;
+      margin-left: 8px;
+      text-transform: uppercase;
+      vertical-align: middle;
+      letter-spacing: 0.4px;
+    }
+    .badge-ok { background: var(--ok-bg); color: var(--ok-text); border: 1px solid var(--ok-line); }
+    .badge-warning { background: var(--yellow-bg); color: var(--yellow-text); border: 1px solid var(--yellow-line); }
+    .badge-critical { background: var(--red-bg); color: var(--red-text); border: 1px solid var(--red-line); }
+
+    .box {
+      border-radius: 10px;
+      border: 1px solid #e4ebf4;
+      background: #fbfdff;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .box-critical { background: var(--red-bg); border-color: var(--red-line); color: var(--red-text); }
+    .box-warning { background: var(--yellow-bg); border-color: var(--yellow-line); color: var(--yellow-text); }
+    .box-ok { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok-text); }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 14px;
+    }
+    .plot-card {
+      border: 1px solid #dfe9f7;
+      border-radius: 12px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .plot-title {
+      font-size: 13px;
+      color: #21406f;
+      border-bottom: 1px solid #e5ecf6;
+      padding: 8px 10px;
+      font-weight: 600;
+    }
+    .plot-card img {
+      width: 100%;
+      display: block;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid #e6edf8;
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: #35527f;
+      font-weight: 700;
+      background: #f8fbff;
+    }
+    .muted { color: var(--muted); }
+    .mono { font-family: Consolas, Menlo, monospace; }
+    .legend-list li { margin-bottom: 6px; }
+    .footer {
+      margin-top: 18px;
+      text-align: center;
+      font-size: 12px;
+      color: #7386a1;
+    }
   </style>
 </head>
 <body>
-<div class="wrapper">
-
-  <h1>RNA-seq Copilot Report</h1>
-  <p class="meta">Generated: {{ generated_at }} · Job ID: {{ job_id }}</p>
-
-  <!-- Summary cards -->
-  <div class="cards">
-    <div class="card">
-      <div class="card-label">Samples</div>
-      <div class="card-value green">{{ summary.n_samples }}</div>
+  <div class="container">
+    <div class="header">
+      <h1 class="title">RNA-seq Analysis Supplement Report</h1>
+      <div class="sub">Generated: {{ generated_at }} | Job: <span class="mono">{{ job_id }}</span></div>
     </div>
-    <div class="card">
-      <div class="card-label">Contrast</div>
-      <div class="card-value" style="font-size:0.85rem; font-weight:600; padding-top:6px; word-break:break-all; line-height:1.4;">
-        {% set parts = summary.contrast.split('_vs_') %}
-        {% if parts|length == 3 %}
-          {{ parts[0] }}: <span class="up">{{ parts[1] }}</span> vs <span class="down">{{ parts[2] }}</span>
-        {% else %}
-          {{ summary.contrast }}
+
+    <div class="section">
+      <h2>1. Summary Cards</h2>
+      <div class="cards">
+        <div class="card">
+          <div class="card-label">Number of Samples</div>
+          <div class="card-value">{{ summary.n_samples }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Groups</div>
+          <div class="card-value" style="font-size: 14px; font-weight: 600;">
+            {% if summary.groups and summary.groups|length > 0 %}
+              {{ summary.groups | join(', ') }}
+            {% else %}
+              not provided
+            {% endif %}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">DEGs (Up / Down)</div>
+          <div class="card-value">{{ summary.deg_up }} / {{ summary.deg_down }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">PCA Separation</div>
+          <div class="card-value" style="text-transform: capitalize;">{{ summary.pca_separation }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>2. Overall Assessment</h2>
+      <div class="grid-2">
+        <div class="box {% if overall_data_quality == 'high' %}box-critical{% elif overall_data_quality == 'moderate' %}box-warning{% else %}box-ok{% endif %}">
+          <strong>Data Quality Risk:</strong> {{ overall_data_quality }}
+        </div>
+        <div class="box {% if overall_realism == 'high' %}box-critical{% elif overall_realism == 'moderate' %}box-warning{% else %}box-ok{% endif %}">
+          <strong>Data Realism Suspicion:</strong> {{ overall_realism }}
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>3. Data Quality (QC)</h2>
+      <div class="grid-2">
+        {% if plots.pca %}
+        <div class="plot-card">
+          <div class="plot-title">PCA Plot{% if qc and qc.pca_variance %}<span class="muted"> (PC1 {{ '%.2f'|format(100*qc.pca_variance.PC1) }}%, PC2 {{ '%.2f'|format(100*qc.pca_variance.PC2) }}%)</span>{% endif %}</div>
+          <img src="data:image/png;base64,{{ plots.pca }}" alt="PCA" />
+        </div>
+        {% endif %}
+        {% if plots.sample_distance_heatmap %}
+        <div class="plot-card">
+          <div class="plot-title">Sample Distance Heatmap</div>
+          <img src="data:image/png;base64,{{ plots.sample_distance_heatmap }}" alt="Sample distance heatmap" />
+        </div>
+        {% endif %}
+        {% if plots.sample_correlation_heatmap %}
+        <div class="plot-card">
+          <div class="plot-title">Sample Correlation Heatmap</div>
+          <img src="data:image/png;base64,{{ plots.sample_correlation_heatmap }}" alt="Sample correlation heatmap" />
+        </div>
+        {% endif %}
+        {% if plots.library_size %}
+        <div class="plot-card">
+          <div class="plot-title">Library Size Plot</div>
+          <img src="data:image/png;base64,{{ plots.library_size }}" alt="Library size" />
+        </div>
+        {% endif %}
+        {% if plots.count_distribution %}
+        <div class="plot-card">
+          <div class="plot-title">Count Distribution Plot</div>
+          <img src="data:image/png;base64,{{ plots.count_distribution }}" alt="Count distribution" />
+        </div>
+        {% endif %}
+        {% if plots.zero_fraction %}
+        <div class="plot-card">
+          <div class="plot-title">Zero Fraction Plot</div>
+          <img src="data:image/png;base64,{{ plots.zero_fraction }}" alt="Zero fraction" />
+        </div>
+        {% endif %}
+      </div>
+
+      <h3>QC Metrics</h3>
+      <div class="cards">
+        <div class="card">
+          <div class="card-label">Replicates per Group</div>
+          <div class="card-value" style="font-size: 13px; font-weight: 600;">
+            {% if qc and qc.replicates_per_group and qc.replicates_per_group|length > 0 %}
+              {% for k, v in qc.replicates_per_group.items() %}<span class="tag">{{ k }}: {{ v }}</span>{% endfor %}
+            {% else %}
+              no issues detected
+            {% endif %}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">Group Balance Ratio</div>
+          <div class="card-value">{% if qc and qc.group_balance %}{{ '%.3f'|format(qc.group_balance.ratio) }}{% else %}not available{% endif %}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Detected Outliers</div>
+          <div class="card-value" style="font-size: 13px; font-weight: 600;">
+            {% if qc and qc.outliers and qc.outliers|length > 0 %}
+              {% for s in qc.outliers %}<span class="tag">{{ s }}</span>{% endfor %}
+            {% else %}
+              no issues detected
+            {% endif %}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">Low-quality Samples</div>
+          <div class="card-value" style="font-size: 13px; font-weight: 600;">
+            {% if qc and qc.low_quality_samples and qc.low_quality_samples|length > 0 %}
+              {% for s in qc.low_quality_samples %}<span class="tag">{{ s }}</span>{% endfor %}
+            {% else %}
+              no issues detected
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>4. QC Warnings (Severity)</h2>
+      {% set qc_items = warning_groups.qc if warning_groups else [] %}
+      {% if qc_items and qc_items|length > 0 %}
+        {% for item in qc_items %}
+          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">
+            <strong>{{ item.level|upper }}</strong>: {{ item.message }}
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No issues detected.</div>
+      {% endif %}
+    </div>
+
+    <div class="section">
+      <h2>5. DEG Summary</h2>
+      <div class="cards">
+        <div class="card"><div class="card-label">Upregulated genes</div><div class="card-value">{{ summary.deg_up }}</div></div>
+        <div class="card"><div class="card-label">Downregulated genes</div><div class="card-value">{{ summary.deg_down }}</div></div>
+        <div class="card"><div class="card-label">Threshold</div><div class="card-value" style="font-size: 13px;">{{ analysis_methods.deg_threshold }}</div></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>6. Top Genes (Top 20)</h2>
+      {% if top_genes_table and top_genes_table|length > 0 %}
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Gene</th>
+            <th>log2FC</th>
+            <th>padj</th>
+            <th>Tags</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in top_genes_table %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td class="mono">{{ row.gene }}</td>
+            <td>{% if row.log2FoldChange is not none %}{{ '%.4f'|format(row.log2FoldChange) }}{% else %}NA{% endif %}</td>
+            <td>{% if row.padj is not none %}{{ '%.4g'|format(row.padj) }}{% else %}NA{% endif %}</td>
+            <td>
+              {% if row.is_canonical %}<span class="tag tag-canonical">canonical</span>{% endif %}
+              {% if row.is_housekeeping %}<span class="tag tag-housekeeping">housekeeping</span>{% endif %}
+              {% if not row.is_canonical and not row.is_housekeeping %}<span class="muted">-</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="box box-ok">No issues detected.</div>
+      {% endif %}
+    </div>
+
+    <div class="section">
+      <h2>7. Figures</h2>
+      <div class="grid-2">
+        {% if plots.volcano %}
+        <div class="plot-card"><div class="plot-title">Volcano Plot</div><img src="data:image/png;base64,{{ plots.volcano }}" alt="Volcano" /></div>
+        {% endif %}
+        {% if plots.ma %}
+        <div class="plot-card"><div class="plot-title">MA Plot</div><img src="data:image/png;base64,{{ plots.ma }}" alt="MA" /></div>
+        {% endif %}
+        {% if plots.pca %}
+        <div class="plot-card"><div class="plot-title">PCA Plot</div><img src="data:image/png;base64,{{ plots.pca }}" alt="PCA" /></div>
         {% endif %}
       </div>
     </div>
-    <div class="card">
-      <div class="card-label">Upregulated DEGs</div>
-      <div class="card-value up">{{ summary.deg_up }}</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Downregulated DEGs</div>
-      <div class="card-value down">{{ summary.deg_down }}</div>
-    </div>
-    <div class="card">
-      <div class="card-label">PCA Separation</div>
-      <div class="card-value" style="font-size:1.1rem; text-transform:capitalize; padding-top:4px;">{{ summary.pca_separation }}</div>
-    </div>
-  </div>
 
-  <!-- Warnings -->
-  {% if summary.warnings or summary.data_issues %}
-  <h2>Quality Warnings</h2>
-  {% if summary.warnings %}
-  <div class="warn-box">
-    <strong>Warnings:</strong>
-    <ul>{% for w in summary.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
-  </div>
-  {% endif %}
-  {% if summary.data_issues %}
-  <div class="warn-box" style="background:#fef2f2; border-color:#f87171;">
-    <strong>Data Issues:</strong>
-    <ul style="color:#991b1b;">{% for w in summary.data_issues %}<li>{{ w }}</li>{% endfor %}</ul>
-  </div>
-  {% endif %}
-  {% endif %}
+    <div class="section">
+      <h2>8. Data Realism / Validation</h2>
+      <div class="cards">
+        <div class="card"><div class="card-label">Canonical genes in top20</div><div class="card-value">{{ realism.metrics.canonical_genes_in_top20 if realism and realism.metrics else 0 }}</div></div>
+        <div class="card"><div class="card-label">Housekeeping genes in top20</div><div class="card-value">{{ realism.metrics.housekeeping_genes_in_top20 if realism and realism.metrics else 0 }}</div></div>
+        <div class="card"><div class="card-label">Total DEG</div><div class="card-value">{{ realism.metrics.total_deg if realism and realism.metrics else 0 }}</div></div>
+        <div class="card"><div class="card-label">fraction p&lt;1e-6 / p&lt;1e-3 / p&gt;0.9</div><div class="card-value" style="font-size: 13px;">{% if realism and realism.metrics %}{{ '%.3f'|format(realism.metrics.fraction_p_lt_1e6) }} / {{ '%.3f'|format(realism.metrics.fraction_p_lt_1e3) }} / {{ '%.3f'|format(realism.metrics.fraction_p_gt_0_9) }}{% else %}0 / 0 / 0{% endif %}</div></div>
+      </div>
 
-  <!-- Strict QC summary -->
-  {% if qc %}
-  <h2>Strict QC & Validation</h2>
-  <div class="warn-box" style="background:#fef2f2; border-color:#ef4444;">
-    <strong>Critical Issues ({{ qc.qc_critical|length }}):</strong>
-    <ul>{% for w in qc.qc_critical %}<li>{{ w }}</li>{% endfor %}</ul>
-  </div>
-  <div class="warn-box">
-    <strong>Warnings ({{ qc.qc_warnings|length }}):</strong>
-    <ul>{% for w in qc.qc_warnings %}<li>{{ w }}</li>{% endfor %}</ul>
-  </div>
-  <p style="margin-top:8px; font-size:0.9rem;">
-    Group balance: <strong>{{ qc.group_balance.status }}</strong>
-    (ratio={{ "%.3f"|format(qc.group_balance.ratio) }}),
-    PCA variance: PC1={{ "%.2f"|format(100 * qc.pca_variance.PC1) }}%,
-    PC2={{ "%.2f"|format(100 * qc.pca_variance.PC2) }}%.
-  </p>
-  {% endif %}
+      <h3>Realism Critical</h3>
+      {% if realism and realism.critical and realism.critical|length > 0 %}
+        {% for item in realism.critical %}
+        <div class="box box-critical"><strong>CRITICAL</strong>: {{ item }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No issues detected.</div>
+      {% endif %}
 
-  <!-- Top genes -->
-  <h2>Top Differentially Expressed Genes</h2>
-  <p style="margin-bottom:10px;">Genes ranked by adjusted p-value (padj &lt; 0.05):</p>
-  <div>{% for g in summary.top_genes %}<span class="tag">{{ g }}</span>{% endfor %}</div>
+      <h3>Realism Warnings</h3>
+      {% if realism and realism.warnings and realism.warnings|length > 0 %}
+        {% for item in realism.warnings %}
+        <div class="box box-warning"><strong>WARNING</strong>: {{ item }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No issues detected.</div>
+      {% endif %}
+    </div>
 
-  <!-- Figures -->
-  <h2>Figures</h2>
-  <div class="plots">
-    {% if plots.pca %}
-    <div class="plot-box">
-      <div class="plot-box-title">PCA Plot</div>
-      <img src="data:image/png;base64,{{ plots.pca }}" alt="PCA plot" />
+    <div class="section">
+      <h2>9. Warnings Grouped by Type</h2>
+      <h3>QC</h3>
+      {% if warning_groups and warning_groups.qc and warning_groups.qc|length > 0 %}
+        {% for item in warning_groups.qc %}
+          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">{{ item.message }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No issues detected.</div>
+      {% endif %}
+
+      <h3>Realism</h3>
+      {% if warning_groups and warning_groups.realism and warning_groups.realism|length > 0 %}
+        {% for item in warning_groups.realism %}
+          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">{{ item.message }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No issues detected.</div>
+      {% endif %}
+
+      <h3>Statistical</h3>
+      {% if warning_groups and warning_groups.statistical and warning_groups.statistical|length > 0 %}
+        {% for item in warning_groups.statistical %}
+          <div class="box box-warning">{{ item.message }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No issues detected.</div>
+      {% endif %}
     </div>
-    {% endif %}
-    {% if plots.volcano %}
-    <div class="plot-box">
-      <div class="plot-box-title">Volcano Plot</div>
-      <img src="data:image/png;base64,{{ plots.volcano }}" alt="Volcano plot" />
+
+    <div class="section">
+      <h2>10. AI Interpretation</h2>
+      {% if llm %}
+        <div class="box"><strong>PCA interpretation:</strong><br />{{ llm.pca_text }}</div>
+        <div class="box"><strong>DEG summary:</strong><br />{{ llm.deg_summary }}</div>
+        <div class="box"><strong>Biological insight:</strong><br />{{ llm.biological_insights }}</div>
+        <div class="box"><strong>Limitations:</strong><br />{{ llm.data_quality }}</div>
+        <div class="box"><strong>Recommendations:</strong><br />{{ llm.next_steps }}</div>
+      {% else %}
+        <div class="box box-ok">No issues detected.</div>
+      {% endif %}
     </div>
-    {% endif %}
-    {% if plots.ma %}
-    <div class="plot-box">
-      <div class="plot-box-title">MA Plot</div>
-      <img src="data:image/png;base64,{{ plots.ma }}" alt="MA plot" />
+
+    <div class="section">
+      <h2>11. Methods (Expanded)</h2>
+      <table>
+        <tbody>
+          <tr><th style="width: 240px;">Design formula</th><td>{{ analysis_methods.design_formula }}</td></tr>
+          <tr><th>Contrast</th><td>{{ analysis_methods.contrast }}</td></tr>
+          <tr><th>Normalization method</th><td>{{ analysis_methods.normalization_method }}</td></tr>
+          <tr><th>Filtering criteria</th><td>{{ analysis_methods.filtering_criteria }}</td></tr>
+          <tr><th>Statistical test</th><td>{{ analysis_methods.statistical_test }}</td></tr>
+          <tr><th>Multiple testing correction</th><td>{{ analysis_methods.multiple_testing_correction }}</td></tr>
+        </tbody>
+      </table>
     </div>
-    {% endif %}
-    {% if plots.heatmap %}
-    <div class="plot-box">
-      <div class="plot-box-title">Sample Distance Heatmap</div>
-      <img src="data:image/png;base64,{{ plots.heatmap }}" alt="Heatmap" />
+
+    <div class="section">
+      <h2>12. Publication-ready Text</h2>
+      <h3>Methods paragraph</h3>
+      <div class="box">{{ methods_paragraph }}</div>
+
+      <h3>Results paragraph</h3>
+      <div class="box">{{ results_paragraph }}</div>
+
+      <h3>Figure legends</h3>
+      <ul class="legend-list">
+        {% if figure_legends and figure_legends|length > 0 %}
+          {% for lg in figure_legends %}
+            <li><strong>{{ lg.title }}:</strong> {{ lg.text }}</li>
+          {% endfor %}
+        {% else %}
+          <li>No issues detected.</li>
+        {% endif %}
+      </ul>
     </div>
-    {% endif %}
-    {% if plots.sample_distance_heatmap %}
-    <div class="plot-box">
-      <div class="plot-box-title">QC: Sample Distance Heatmap</div>
-      <img src="data:image/png;base64,{{ plots.sample_distance_heatmap }}" alt="QC distance heatmap" />
-    </div>
-    {% endif %}
-    {% if plots.sample_correlation_heatmap %}
-    <div class="plot-box">
-      <div class="plot-box-title">QC: Sample Correlation Heatmap</div>
-      <img src="data:image/png;base64,{{ plots.sample_correlation_heatmap }}" alt="QC correlation heatmap" />
-    </div>
-    {% endif %}
-    {% if plots.library_size %}
-    <div class="plot-box">
-      <div class="plot-box-title">QC: Library Size</div>
-      <img src="data:image/png;base64,{{ plots.library_size }}" alt="QC library size" />
-    </div>
-    {% endif %}
-    {% if plots.count_distribution %}
-    <div class="plot-box">
-      <div class="plot-box-title">QC: Count Distribution</div>
-      <img src="data:image/png;base64,{{ plots.count_distribution }}" alt="QC count distribution" />
-    </div>
-    {% endif %}
-    {% if plots.zero_fraction %}
-    <div class="plot-box">
-      <div class="plot-box-title">QC: Zero Fraction</div>
-      <img src="data:image/png;base64,{{ plots.zero_fraction }}" alt="QC zero fraction" />
-    </div>
-    {% endif %}
+
+    <div class="footer">RNA-seq report generated from structured JSON outputs only</div>
   </div>
-
-  <!-- AI Interpretation -->
-  {% if llm %}
-  <h2>AI Biological Interpretation</h2>
-  <div class="ai-section">
-    <p style="font-size:0.8rem; color:#6d28d9; margin-bottom:4px;">Generated from structured summary JSON · Always verify claims independently.</p>
-    {% for key, label in [('pca_text','PCA Interpretation'), ('deg_summary','DEG Summary'), ('biological_insights','Biological Insights'), ('data_quality','Data Quality'), ('next_steps','Recommended Next Steps')] %}
-    <div class="ai-block">
-      <h3>{{ label }}</h3>
-      <p>{{ llm[key] }}</p>
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  <!-- Methods -->
-  <h2>Methods</h2>
-  <div class="methods-box">
-    Raw gene counts were loaded and quality-checked for sample name consistency, integer values,
-    and minimum replicate requirements. Differential expression analysis was performed using
-    DESeq2 with design formula "~ {{ summary.contrast.split('_vs_')[0] }}".
-    Low-count genes (sum &lt; 10 across all samples) were filtered prior to analysis.
-    Variance-stabilising transformation (VST) was applied for visualisations.
-    Significant DEGs were defined as |log2FC| &gt; 1 and adjusted p-value (Benjamini–Hochberg) &lt; 0.05.
-    All plots were generated using ggplot2 and pheatmap in R.
-    Biological interpretation was generated by an LLM from a structured summary JSON — no raw data was provided to the model.
-  </div>
-
-  <div class="footer">RNA-seq Copilot MVP · Analysis for research purposes only</div>
-</div>
 </body>
 </html>

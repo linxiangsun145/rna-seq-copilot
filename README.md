@@ -40,6 +40,7 @@ rna-seq-copilot/
 │   │   ├── validator.py    # Input validation logic
 │   │   ├── r_runner.py     # Subprocess call to Rscript
 │   │   ├── llm_client.py   # OpenAI-compatible LLM client
+│   │   ├── realism_validator.py # Strict realism validation
 │   │   └── report_builder.py # Jinja2 HTML report
 │   ├── models/schemas.py   # Pydantic models
 │   ├── db/database.py      # SQLite job store
@@ -47,6 +48,7 @@ rna-seq-copilot/
 │
 ├── r_scripts/              # R analysis engine
 │   ├── run_deseq2.R        # Main pipeline script
+│   ├── qc_analysis.R       # Strict QC + validation rules
 │   ├── plot_pca.R
 │   ├── plot_volcano.R
 │   ├── plot_ma.R
@@ -64,7 +66,9 @@ rna-seq-copilot/
 
 ## Quick Start
 
-### Option A: Docker Compose (recommended)
+### Option A: Docker Compose
+
+> Requires frontend Dockerfile in `frontend/` (included in this repository).
 
 ```bash
 cd rna-seq-copilot
@@ -173,6 +177,7 @@ curl -s http://localhost:8000/report/$JOB -o report.html
 | `R_SCRIPTS_DIR` | No | `../r_scripts` | Path to R scripts |
 | `JOBS_DIR` | No | `./jobs` | Job working directory |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity |
+| `RSCRIPT_PATH` | No | `Rscript` | Override Rscript executable path |
 
 > The LLM is completely optional. If `LLM_API_KEY` is not set, AI interpretation is skipped gracefully.
 
@@ -228,15 +233,28 @@ treat_1,treated,A
 ## Analysis Pipeline
 
 ```
-Upload → Validate → DESeq2 → Plots → Summary JSON → LLM → HTML Report
+Upload → Validate → DESeq2 → Strict QC → Realism Validation → Summary JSON → LLM → HTML Report
 ```
 
 1. **Filter**: genes with total raw count < 10 removed
 2. **Normalise**: DESeq2 median-of-ratios normalisation
 3. **Shrink**: LFC shrinkage with `ashr`
 4. **Significance**: padj < 0.05, |log2FC| > 1
-5. **Visualise**: PCA, volcano, MA plot, sample-distance heatmap (VST)
-6. **Interpret**: LLM receives summary JSON only — never raw matrix
+5. **QC / Visualise**: PCA, volcano, MA, distance heatmap, correlation heatmap, library size, count distribution, zero-fraction plot
+6. **Validate realism**: Strict threshold-based checks for canonical/housekeeping overrepresentation, p-value anomalies, effect-size plausibility, and QC consistency
+7. **Interpret**: LLM receives summary JSON only — never raw matrix
+
+---
+
+## Structured Outputs
+
+Each job writes outputs under `backend/jobs/<job_id>/`:
+
+- `results/deg_results.csv` — DEG table
+- `results/summary.json` — summary statistics + realism validation
+- `results/qc_report.json` — strict QC report (warning/critical)
+- `plots/*.png` — all generated figures
+- `report.html` — publication-style integrated report
 
 ---
 
