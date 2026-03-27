@@ -53,6 +53,62 @@ export interface AnalysisSummary {
   top_genes: string[];
   warnings: string[];
   data_issues: string[];
+  realism_validation?: RealismValidation;
+}
+
+export interface RealismMetrics {
+  canonical_genes_in_top20: number;
+  canonical_fraction_top20: number;
+  housekeeping_genes_in_top20: number;
+  total_deg: number;
+  fraction_p_lt_1e6: number;
+  fraction_p_lt_1e3: number;
+  fraction_p_gt_0_9: number;
+  fraction_deg_abs_log2fc_gt_5: number;
+  fraction_deg_abs_log2fc_gt_10: number;
+}
+
+export interface RealismValidation {
+  realism_flags: string[];
+  suspicious_patterns: string[];
+  warnings: string[];
+  critical: string[];
+  metrics: RealismMetrics;
+  overall_suspicion: "low" | "moderate" | "high";
+}
+
+export interface QCGroupBalance {
+  status: "balanced" | "warning" | "critical";
+  ratio: number;
+}
+
+export interface QCFlagItem {
+  sample?: string;
+  level: "warning" | "critical";
+  value?: number;
+  threshold?: number;
+  rule: string;
+  mean_correlation?: number;
+  detail?: string;
+  genes?: string[];
+}
+
+export interface QCReport {
+  outliers: string[];
+  low_quality_samples: string[];
+  group_balance: QCGroupBalance;
+  replicates_per_group: Record<string, number>;
+  library_size_flags: QCFlagItem[];
+  zero_fraction_flags: QCFlagItem[];
+  correlation_flags: QCFlagItem[];
+  batch_flags: QCFlagItem[];
+  realism_flags: QCFlagItem[];
+  qc_warnings: string[];
+  qc_critical: string[];
+  pca_variance: {
+    PC1: number;
+    PC2: number;
+  };
 }
 
 export interface ResultsPayload {
@@ -60,12 +116,18 @@ export interface ResultsPayload {
   status: JobStatus;
   error?: string;
   summary: AnalysisSummary | null;
+  qc_report?: QCReport | null;
   deg_table_url: string | null;
   plots: {
     pca?: string;
     volcano?: string;
     ma?: string;
     heatmap?: string;
+    sample_distance_heatmap?: string;
+    sample_correlation_heatmap?: string;
+    library_size?: string;
+    count_distribution?: string;
+    zero_fraction?: string;
   };
   llm_interpretation: LLMInterpretation | null;
   report_url: string | null;

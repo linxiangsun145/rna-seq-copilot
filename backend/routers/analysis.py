@@ -1,6 +1,7 @@
 """
 Analysis router — POST /validate/{job_id}  &  POST /run-analysis/{job_id}
 """
+import json
 import logging
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from models.schemas import JobStatus, RunAnalysisRequest, ValidationReport
 from services.validator import validate_inputs
 from services.r_runner import run_deseq2
 from services.llm_client import generate_interpretation
+from services.realism_validator import validate_realism
 from services.report_builder import build_report
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,17 @@ def _run_pipeline(job_id: str, formula: str, contrast: list[str]) -> None:
     try:
         logger.info("[%s] Running DESeq2…", job_id)
         summary = run_deseq2(job_dir, formula, contrast)
+
+        logger.info("[%s] Running strict realism validation…", job_id)
+        realism = validate_realism(job_dir, summary.model_dump())
+        summary.realism_validation = realism
+
+        # Keep filesystem summary.json in sync with backend-enriched summary.
+        summary_path = job_dir / "results" / "summary.json"
+        summary_path.write_text(
+            json.dumps(summary.model_dump(), indent=2),
+            encoding="utf-8",
+        )
 
         logger.info("[%s] Generating LLM interpretation…", job_id)
         llm = None

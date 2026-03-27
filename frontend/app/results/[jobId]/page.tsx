@@ -159,6 +159,158 @@ export default function ResultsPage() {
           {/* QC tab */}
           {activeTab === "qc" && data.summary && (
             <div className="space-y-4">
+              {data.qc_report && (
+                <div className="bg-white rounded-xl border p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-medium text-gray-900">Strict QC Report</h3>
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-xs font-semibold uppercase ${
+                        data.qc_report.group_balance.status === "critical"
+                          ? "bg-red-100 text-red-700"
+                          : data.qc_report.group_balance.status === "warning"
+                          ? "bg-yellow-100 text-yellow-700"
+                          : "bg-green-100 text-green-700"
+                      }`}
+                    >
+                      {data.qc_report.group_balance.status}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                    <MiniMetric
+                      label="Group balance ratio"
+                      value={data.qc_report.group_balance.ratio.toFixed(3)}
+                    />
+                    <MiniMetric
+                      label="Replicate groups"
+                      value={`${Object.keys(data.qc_report.replicates_per_group || {}).length}`}
+                    />
+                    <MiniMetric
+                      label="Outlier samples"
+                      value={`${data.qc_report.outliers.length}`}
+                    />
+                    <MiniMetric
+                      label="Low-quality samples"
+                      value={`${data.qc_report.low_quality_samples.length}`}
+                    />
+                    <MiniMetric
+                      label="PCA variance PC1"
+                      value={`${(100 * (data.qc_report.pca_variance?.PC1 ?? 0)).toFixed(2)}%`}
+                    />
+                    <MiniMetric
+                      label="PCA variance PC2"
+                      value={`${(100 * (data.qc_report.pca_variance?.PC2 ?? 0)).toFixed(2)}%`}
+                    />
+                    <MiniMetric
+                      label="Library size flags"
+                      value={`${data.qc_report.library_size_flags.length}`}
+                    />
+                    <MiniMetric
+                      label="Zero-fraction flags"
+                      value={`${data.qc_report.zero_fraction_flags.length}`}
+                    />
+                  </div>
+
+                  {data.qc_report.qc_critical.length > 0 && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+                      <h4 className="text-xs font-semibold text-red-800 mb-1">QC Critical</h4>
+                      <ul className="space-y-1">
+                        {data.qc_report.qc_critical.map((c, i) => (
+                          <li key={i} className="text-xs text-red-700">✗ {c}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {data.qc_report.qc_warnings.length > 0 && (
+                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-3">
+                      <h4 className="text-xs font-semibold text-yellow-800 mb-1">QC Warnings</h4>
+                      <ul className="space-y-1">
+                        {data.qc_report.qc_warnings.map((w, i) => (
+                          <li key={i} className="text-xs text-yellow-700">⚠ {w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {Object.keys(data.qc_report.replicates_per_group || {}).length > 0 && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                      <h4 className="text-xs font-semibold text-gray-700 mb-1">Replicates Per Group</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(data.qc_report.replicates_per_group).map(([grp, n]) => (
+                          <span key={grp} className="px-2 py-1 bg-white border border-gray-200 rounded text-xs text-gray-700">
+                            {grp}: {n}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {data.summary.realism_validation && (
+                <div className="bg-white rounded-xl border p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-medium text-gray-900">Data Realism Validation</h3>
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-xs font-semibold uppercase ${
+                        data.summary.realism_validation.overall_suspicion === "high"
+                          ? "bg-red-100 text-red-700"
+                          : data.summary.realism_validation.overall_suspicion === "moderate"
+                          ? "bg-yellow-100 text-yellow-700"
+                          : "bg-green-100 text-green-700"
+                      }`}
+                    >
+                      {data.summary.realism_validation.overall_suspicion}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                    <MiniMetric label="Canonical in Top20" value={`${data.summary.realism_validation.metrics.canonical_genes_in_top20}`} />
+                    <MiniMetric label="Canonical Fraction Top20" value={data.summary.realism_validation.metrics.canonical_fraction_top20.toFixed(3)} />
+                    <MiniMetric label="Housekeeping in Top20" value={`${data.summary.realism_validation.metrics.housekeeping_genes_in_top20}`} />
+                    <MiniMetric label="Total DEG (padj < 0.05)" value={`${data.summary.realism_validation.metrics.total_deg}`} />
+                    <MiniMetric label="Fraction p < 1e-6" value={data.summary.realism_validation.metrics.fraction_p_lt_1e6.toFixed(3)} />
+                    <MiniMetric label="Fraction p < 1e-3" value={data.summary.realism_validation.metrics.fraction_p_lt_1e3.toFixed(3)} />
+                    <MiniMetric label="Fraction p > 0.9" value={data.summary.realism_validation.metrics.fraction_p_gt_0_9.toFixed(3)} />
+                    <MiniMetric label="DEG |log2FC| > 5" value={data.summary.realism_validation.metrics.fraction_deg_abs_log2fc_gt_5.toFixed(3)} />
+                  </div>
+
+                  {data.summary.realism_validation.critical.length > 0 && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+                      <h4 className="text-xs font-semibold text-red-800 mb-1">Critical</h4>
+                      <ul className="space-y-1">
+                        {data.summary.realism_validation.critical.map((c, i) => (
+                          <li key={i} className="text-xs text-red-700">✗ {c}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {data.summary.realism_validation.warnings.length > 0 && (
+                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-3">
+                      <h4 className="text-xs font-semibold text-yellow-800 mb-1">Warnings</h4>
+                      <ul className="space-y-1">
+                        {data.summary.realism_validation.warnings.map((w, i) => (
+                          <li key={i} className="text-xs text-yellow-700">⚠ {w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {data.summary.realism_validation.suspicious_patterns.length > 0 && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                      <h4 className="text-xs font-semibold text-gray-700 mb-1">Suspicious Patterns</h4>
+                      <ul className="space-y-1">
+                        {data.summary.realism_validation.suspicious_patterns.map((p, i) => (
+                          <li key={i} className="text-xs text-gray-600">• {p}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {data.summary.warnings.length > 0 && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
                   <h3 className="text-sm font-semibold text-yellow-800 mb-2">Warnings</h3>
@@ -223,6 +375,41 @@ export default function ResultsPage() {
                   description="Euclidean distances between samples in VST space"
                 />
               )}
+              {data.plots.sample_distance_heatmap && (
+                <PlotViewer
+                  src={plotUrl(jobId, "sample_distance_heatmap.png")}
+                  title="QC: Sample Distance Heatmap"
+                  description="Strict QC distance matrix using VST counts"
+                />
+              )}
+              {data.plots.sample_correlation_heatmap && (
+                <PlotViewer
+                  src={plotUrl(jobId, "sample_correlation_heatmap.png")}
+                  title="QC: Sample Correlation Heatmap"
+                  description="Pearson correlation matrix across samples"
+                />
+              )}
+              {data.plots.library_size && (
+                <PlotViewer
+                  src={plotUrl(jobId, "library_size.png")}
+                  title="QC: Library Size"
+                  description="Total counts per sample with strict threshold checks"
+                />
+              )}
+              {data.plots.count_distribution && (
+                <PlotViewer
+                  src={plotUrl(jobId, "count_distribution.png")}
+                  title="QC: Count Distribution"
+                  description="Sample-level count density in log2 scale"
+                />
+              )}
+              {data.plots.zero_fraction && (
+                <PlotViewer
+                  src={plotUrl(jobId, "zero_fraction.png")}
+                  title="QC: Zero Fraction"
+                  description="Fraction of zero-count genes per sample"
+                />
+              )}
             </div>
           )}
 
@@ -260,6 +447,15 @@ function SummaryCard({
     <div className="bg-white rounded-xl border p-4">
       <p className="text-xs text-gray-500 mb-1">{label}</p>
       <p className={`text-2xl font-bold capitalize ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-gray-50 rounded-lg border border-gray-200 p-3">
+      <p className="text-[11px] text-gray-500 mb-1">{label}</p>
+      <p className="text-sm font-semibold text-gray-800">{value}</p>
     </div>
   );
 }

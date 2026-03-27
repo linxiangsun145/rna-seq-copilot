@@ -71,6 +71,28 @@ class AnalysisSummary(BaseModel):
     top_genes: List[str]
     warnings: List[str]
     data_issues: List[str]
+    realism_validation: Optional["RealismValidation"] = None
+
+
+class RealismMetrics(BaseModel):
+    canonical_genes_in_top20: int
+    canonical_fraction_top20: float
+    housekeeping_genes_in_top20: int
+    total_deg: int
+    fraction_p_lt_1e6: float
+    fraction_p_lt_1e3: float
+    fraction_p_gt_0_9: float
+    fraction_deg_abs_log2fc_gt_5: float
+    fraction_deg_abs_log2fc_gt_10: float
+
+
+class RealismValidation(BaseModel):
+    realism_flags: List[str]
+    suspicious_patterns: List[str]
+    warnings: List[str]
+    critical: List[str]
+    metrics: RealismMetrics
+    overall_suspicion: str  # low | moderate | high
 
 
 class GroupBalance(BaseModel):
