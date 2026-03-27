@@ -238,6 +238,18 @@
           <strong>Data Realism Suspicion:</strong> {{ overall_realism }}
         </div>
       </div>
+      <h3>Assessment Basis</h3>
+      <div class="box">
+        {% if assessment_basis and assessment_basis|length > 0 %}
+          <ul>
+            {% for item in assessment_basis %}
+              <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <span class="muted">No major quality or realism concerns detected.</span>
+        {% endif %}
+      </div>
     </div>
 
     <div class="section">

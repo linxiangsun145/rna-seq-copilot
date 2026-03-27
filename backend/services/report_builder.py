@@ -7,6 +7,8 @@ import base64
 import csv
 import json
 import logging
+import re
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -116,6 +118,104 @@ def _grouped_warnings(
     return grouped
 
 
+def _normalize_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace("Warning realism flag:", "")
+    cleaned = cleaned.replace("Critical realism flag:", "")
+    cleaned = cleaned.replace("warning", "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else ""
+
+
+def _expand_groups_for_assessment(
+    groups: list[str],
+    qc: Optional[dict[str, Any]],
+) -> list[str]:
+    if qc:
+        replicates = qc.get("replicates_per_group")
+        if isinstance(replicates, dict) and replicates:
+            expanded: list[str] = []
+            for group_name, count in replicates.items():
+                try:
+                    n = int(count)
+                except Exception:
+                    continue
+                if n > 0:
+                    expanded.extend([str(group_name)] * n)
+            if expanded:
+                return expanded
+    return [str(g) for g in (groups or []) if str(g).strip()]
+
+
+def generateAssessmentBasis(
+    qc_warnings: list[str],
+    realism_flags: list[str],
+    n_samples: int,
+    groups: list[str],
+) -> list[str]:
+    basis: list[str] = []
+    warnings = [str(w).strip() for w in (qc_warnings or []) if str(w).strip()]
+    flags = [str(f).strip() for f in (realism_flags or []) if str(f).strip()]
+
+    corr_samples: set[str] = set()
+    for w in warnings:
+        m = re.search(r"Sample\s+'([^']+)'\s+warning mean correlation", w)
+        if m:
+            corr_samples.add(m.group(1))
+    if corr_samples:
+        basis.append(f"{len(corr_samples)} sample(s) showed low inter-sample correlation.")
+
+    for w in warnings:
+        if "warning mean correlation" in w.lower():
+            continue
+        pretty = _normalize_text(w)
+        if pretty and pretty not in basis:
+            basis.append(pretty)
+
+    realism_map = {
+        "canonical_top20_critical": "Canonical genes are overrepresented in the top DEG list.",
+        "canonical_top20_warning": "Canonical genes are moderately overrepresented in the top DEG list.",
+        "housekeeping_top20_critical": "Housekeeping genes are strongly represented among top DEGs.",
+        "housekeeping_top20_warning": "Housekeeping genes appear in top DEGs.",
+        "housekeeping_strong_effect_critical": "Housekeeping genes show unusually strong differential effects.",
+        "deg_count_zero_critical": "No DEGs passed significance thresholds.",
+        "deg_count_too_high_critical": "DEG count is implausibly high.",
+        "deg_count_low_warning": "DEG count is very low.",
+        "deg_count_high_warning": "DEG count is unusually high.",
+        "pvalue_tiny_fraction_critical": "Anomalous concentration of extremely small p-values detected.",
+        "pvalue_tiny_fraction_warning": "High fraction of very small p-values detected.",
+        "pvalue_uniform_non_sig_warning": "Non-significant p-values appear overly uniform.",
+        "pvalue_bimodal_tail_pileup_warning": "P-values show suspicious pile-up at both tails.",
+        "effect_size_extreme_critical": "A large fraction of DEGs has extreme effect sizes.",
+        "effect_size_large_warning": "Many DEGs have large effect sizes.",
+        "top_gene_dominance_warning": "Top-ranked genes dominate the significance signal.",
+    }
+
+    for flag in flags:
+        msg = realism_map.get(flag)
+        if not msg:
+            msg = _normalize_text(flag.replace("_", " "))
+        if msg and msg not in basis:
+            basis.append(msg)
+
+    group_counts = Counter([g for g in groups if g])
+    if len(group_counts) >= 2:
+        min_count = min(group_counts.values())
+        max_count = max(group_counts.values())
+        if min_count != max_count:
+            basis.append(f"Group imbalance observed ({min_count} vs {max_count} samples).")
+
+    try:
+        if int(n_samples) < 6:
+            basis.append(f"Small sample size warning: only {int(n_samples)} samples available.")
+    except Exception:
+        pass
+
+    return basis
+
+
 def build_report(
     job_dir: Path,
     summary: AnalysisSummary,
@@ -215,6 +315,13 @@ def build_report(
     ]
 
     warning_groups = _grouped_warnings(summary_data, qc_report, realism)
+    groups_for_assessment = _expand_groups_for_assessment(groups, qc_report)
+    assessment_basis = generateAssessmentBasis(
+        qc_warnings=(qc_report or {}).get("qc_warnings", []) or [],
+        realism_flags=(realism or {}).get("realism_flags", []) or [],
+        n_samples=int(summary_data.get("n_samples", 0) or 0),
+        groups=groups_for_assessment,
+    )
 
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -223,6 +330,7 @@ def build_report(
         realism=realism,
         top_genes_table=top_genes_table,
         warning_groups=warning_groups,
+        assessment_basis=assessment_basis,
         analysis_methods=analysis_methods,
         methods_paragraph=methods_paragraph,
         results_paragraph=results_paragraph,
