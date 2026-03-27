@@ -17,6 +17,7 @@ from models.schemas import (
     AnalysisSummary,
     JobStatus,
     LLMInterpretation,
+    QCReport,
     ResultsPayload,
 )
 
@@ -50,10 +51,25 @@ def get_results(job_id: str):
     if row["llm_json"]:
         llm = LLMInterpretation(**json.loads(row["llm_json"]))
 
+    qc_report: QCReport | None = None
+    qc_path = job_dir / "results" / "qc_report.json"
+    if qc_path.exists():
+        qc_report = QCReport(**json.loads(qc_path.read_text(encoding="utf-8")))
+
     # Build plot presence map
     plot_dir = job_dir / "plots"
     plots: dict = {}
-    for name in ["pca", "volcano", "ma", "heatmap"]:
+    for name in [
+        "pca",
+        "volcano",
+        "ma",
+        "heatmap",
+        "sample_distance_heatmap",
+        "sample_correlation_heatmap",
+        "library_size",
+        "count_distribution",
+        "zero_fraction",
+    ]:
         p = plot_dir / f"{name}.png"
         plots[name] = f"/results/{job_id}/plots/{name}.png" if p.exists() else None
 
@@ -67,6 +83,7 @@ def get_results(job_id: str):
         job_id=job_id,
         status=status,
         summary=summary,
+        qc_report=qc_report,
         deg_table_url=deg_url,
         plots=plots,
         llm_interpretation=llm,

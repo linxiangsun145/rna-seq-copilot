@@ -4,6 +4,7 @@ HTML report builder — renders a Jinja2 template with analysis artefacts.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,12 +41,31 @@ def build_report(
     plots_dir = job_dir / "plots"
     plots = {
         name: _img_to_base64(plots_dir / f"{name}.png")
-        for name in ["pca", "volcano", "ma", "heatmap"]
+        for name in [
+            "pca",
+            "volcano",
+            "ma",
+            "heatmap",
+            "sample_distance_heatmap",
+            "sample_correlation_heatmap",
+            "library_size",
+            "count_distribution",
+            "zero_fraction",
+        ]
     }
+
+    qc_report = None
+    qc_path = job_dir / "results" / "qc_report.json"
+    if qc_path.exists():
+        try:
+            qc_report = json.loads(qc_path.read_text(encoding="utf-8"))
+        except Exception:
+            qc_report = None
 
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         summary=summary.model_dump(),
+        qc=qc_report,
         llm=llm.model_dump() if llm else None,
         plots=plots,
         job_id=job_dir.name,

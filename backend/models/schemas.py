@@ -73,6 +73,57 @@ class AnalysisSummary(BaseModel):
     data_issues: List[str]
 
 
+class GroupBalance(BaseModel):
+    status: str  # balanced | warning | critical
+    ratio: float
+
+
+class SampleFlag(BaseModel):
+    sample: str
+    level: str  # warning | critical
+    value: Optional[float] = None
+    threshold: Optional[float] = None
+    rule: str
+
+
+class CorrelationFlag(BaseModel):
+    sample: str
+    level: str  # warning | critical
+    mean_correlation: float
+    threshold: float
+    rule: str
+
+
+class GenericFlag(BaseModel):
+    level: str  # warning | critical
+    rule: str
+    detail: Optional[str] = None
+    sample: Optional[str] = None
+    value: Optional[float] = None
+    threshold: Optional[float] = None
+    genes: Optional[List[str]] = None
+    ks_pvalue: Optional[float] = None
+    mean_pvalue: Optional[float] = None
+    fraction: Optional[float] = None
+    z_median: Optional[float] = None
+    iqr: Optional[float] = None
+
+
+class QCReport(BaseModel):
+    outliers: List[str]
+    low_quality_samples: List[str]
+    group_balance: GroupBalance
+    replicates_per_group: Dict[str, int]
+    library_size_flags: List[SampleFlag]
+    zero_fraction_flags: List[SampleFlag]
+    correlation_flags: List[CorrelationFlag]
+    batch_flags: List[GenericFlag]
+    realism_flags: List[GenericFlag]
+    qc_warnings: List[str]
+    qc_critical: List[str]
+    pca_variance: Dict[str, float]
+
+
 # ─── LLM interpretation ──────────────────────────────────────────────────────
 
 class LLMInterpretation(BaseModel):
@@ -89,6 +140,7 @@ class ResultsPayload(BaseModel):
     job_id: str
     status: JobStatus
     summary: Optional[AnalysisSummary] = None
+    qc_report: Optional[QCReport] = None
     deg_table_url: Optional[str] = None
     plots: Dict[str, Optional[str]] = {}
     llm_interpretation: Optional[LLMInterpretation] = None

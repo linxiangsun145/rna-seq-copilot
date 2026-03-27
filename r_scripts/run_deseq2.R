@@ -154,13 +154,26 @@ source(file.path(script_dir, "plot_volcano.R"))
 source(file.path(script_dir, "plot_ma.R"))
 source(file.path(script_dir, "plot_heatmap.R"))
 source(file.path(script_dir, "summarize_results.R"))
+source(file.path(script_dir, "qc_analysis.R"))
 
-# ── Generate plots ────────────────────────────────────────────────────────────
+# ── Generate DEG plots ────────────────────────────────────────────────────────
 plot_pca(vsd,     meta, contrast_factor, file.path(plots_dir, "pca.png"))
 plot_volcano(res_df,                     file.path(plots_dir, "volcano.png"),
              contrast_num, contrast_denom)
 plot_ma(res_df,                          file.path(plots_dir, "ma.png"))  # res_df: avoids lfcShrink stat-column drop
 plot_heatmap(vsd,  meta,                 file.path(plots_dir, "heatmap.png"))
+
+# ── QC module ─────────────────────────────────────────────────────────────────
+run_qc(
+  dds             = dds,
+  vsd             = vsd,
+  counts_mat      = counts_mat,
+  meta            = meta,
+  contrast_factor = contrast_factor,
+  res_df          = res_df,
+  plots_dir       = plots_dir,
+  results_dir     = results_dir
+)
 
 # ── Write summary JSON ────────────────────────────────────────────────────────
 summary_json <- build_summary(

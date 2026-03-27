@@ -88,6 +88,25 @@
   {% endif %}
   {% endif %}
 
+  <!-- Strict QC summary -->
+  {% if qc %}
+  <h2>Strict QC & Validation</h2>
+  <div class="warn-box" style="background:#fef2f2; border-color:#ef4444;">
+    <strong>Critical Issues ({{ qc.qc_critical|length }}):</strong>
+    <ul>{% for w in qc.qc_critical %}<li>{{ w }}</li>{% endfor %}</ul>
+  </div>
+  <div class="warn-box">
+    <strong>Warnings ({{ qc.qc_warnings|length }}):</strong>
+    <ul>{% for w in qc.qc_warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+  </div>
+  <p style="margin-top:8px; font-size:0.9rem;">
+    Group balance: <strong>{{ qc.group_balance.status }}</strong>
+    (ratio={{ "%.3f"|format(qc.group_balance.ratio) }}),
+    PCA variance: PC1={{ "%.2f"|format(100 * qc.pca_variance.PC1) }}%,
+    PC2={{ "%.2f"|format(100 * qc.pca_variance.PC2) }}%.
+  </p>
+  {% endif %}
+
   <!-- Top genes -->
   <h2>Top Differentially Expressed Genes</h2>
   <p style="margin-bottom:10px;">Genes ranked by adjusted p-value (padj &lt; 0.05):</p>
@@ -118,6 +137,36 @@
     <div class="plot-box">
       <div class="plot-box-title">Sample Distance Heatmap</div>
       <img src="data:image/png;base64,{{ plots.heatmap }}" alt="Heatmap" />
+    </div>
+    {% endif %}
+    {% if plots.sample_distance_heatmap %}
+    <div class="plot-box">
+      <div class="plot-box-title">QC: Sample Distance Heatmap</div>
+      <img src="data:image/png;base64,{{ plots.sample_distance_heatmap }}" alt="QC distance heatmap" />
+    </div>
+    {% endif %}
+    {% if plots.sample_correlation_heatmap %}
+    <div class="plot-box">
+      <div class="plot-box-title">QC: Sample Correlation Heatmap</div>
+      <img src="data:image/png;base64,{{ plots.sample_correlation_heatmap }}" alt="QC correlation heatmap" />
+    </div>
+    {% endif %}
+    {% if plots.library_size %}
+    <div class="plot-box">
+      <div class="plot-box-title">QC: Library Size</div>
+      <img src="data:image/png;base64,{{ plots.library_size }}" alt="QC library size" />
+    </div>
+    {% endif %}
+    {% if plots.count_distribution %}
+    <div class="plot-box">
+      <div class="plot-box-title">QC: Count Distribution</div>
+      <img src="data:image/png;base64,{{ plots.count_distribution }}" alt="QC count distribution" />
+    </div>
+    {% endif %}
+    {% if plots.zero_fraction %}
+    <div class="plot-box">
+      <div class="plot-box-title">QC: Zero Fraction</div>
+      <img src="data:image/png;base64,{{ plots.zero_fraction }}" alt="QC zero fraction" />
     </div>
     {% endif %}
   </div>
