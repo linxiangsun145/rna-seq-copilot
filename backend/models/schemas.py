@@ -154,6 +154,9 @@ class LLMInterpretation(BaseModel):
     biological_insights: str
     data_quality: str
     next_steps: str
+    methods_paragraph: Optional[str] = None
+    results_paragraph: Optional[str] = None
+    figure_legend: Optional[str] = None
 
 
 # ─── Results payload ─────────────────────────────────────────────────────────

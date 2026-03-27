@@ -139,4 +139,7 @@ export interface LLMInterpretation {
   biological_insights: string;
   data_quality: string;
   next_steps: string;
+  methods_paragraph?: string;
+  results_paragraph?: string;
+  figure_legend?: string;
 }

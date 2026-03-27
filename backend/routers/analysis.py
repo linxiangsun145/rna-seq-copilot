@@ -104,6 +104,14 @@ def _run_pipeline(job_id: str, formula: str, contrast: list[str]) -> None:
         realism = validate_realism(job_dir, summary.model_dump())
         summary.realism_validation = realism
 
+        qc_report = None
+        qc_path = job_dir / "results" / "qc_report.json"
+        if qc_path.exists():
+            try:
+                qc_report = json.loads(qc_path.read_text(encoding="utf-8"))
+            except Exception:
+                qc_report = None
+
         # Keep filesystem summary.json in sync with backend-enriched summary.
         summary_path = job_dir / "results" / "summary.json"
         summary_path.write_text(
@@ -114,7 +122,7 @@ def _run_pipeline(job_id: str, formula: str, contrast: list[str]) -> None:
         logger.info("[%s] Generating LLM interpretation…", job_id)
         llm = None
         try:
-            llm = generate_interpretation(summary)
+            llm = generate_interpretation(summary, qc_report=qc_report)
         except Exception as exc:
             logger.warning("[%s] LLM interpretation failed: %s", job_id, exc)
 

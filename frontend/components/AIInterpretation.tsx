@@ -10,8 +10,11 @@ const sections: { key: keyof LLMInterpretation; label: string; icon: string }[] 
   { key: "pca_text", label: "PCA Interpretation", icon: "📍" },
   { key: "deg_summary", label: "DEG Summary", icon: "🔬" },
   { key: "biological_insights", label: "Biological Insights", icon: "💡" },
-  { key: "data_quality", label: "Data Quality", icon: "✅" },
+  { key: "data_quality", label: "Limitations", icon: "⚠" },
   { key: "next_steps", label: "Recommended Next Steps", icon: "→" },
+  { key: "methods_paragraph", label: "Methods Paragraph", icon: "🧪" },
+  { key: "results_paragraph", label: "Results Paragraph", icon: "📝" },
+  { key: "figure_legend", label: "Figure Legend", icon: "🖼" },
 ];
 
 export function AIInterpretation({ interpretation }: Props) {
@@ -29,7 +32,7 @@ export function AIInterpretation({ interpretation }: Props) {
 
       <div className="space-y-4">
         {sections.map(({ key, label, icon }) => (
-          <div key={key} className="bg-white rounded-lg border p-4">
+          <div key={key} className="bg-white rounded-lg border p-4" style={{ display: interpretation[key] ? "block" : "none" }}>
             <div className="flex items-center gap-2 mb-2">
               <span>{icon}</span>
               <h3 className="text-sm font-medium text-gray-900">{label}</h3>
