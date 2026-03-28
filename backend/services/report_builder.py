@@ -90,42 +90,69 @@ def _overall_data_quality(qc: Optional[dict[str, Any]]) -> str:
     return "low"
 
 
-def summarizeWarningsForSummary(warning_items: list[dict[str, Any]]) -> str:
-    """Compress warning items into 1-2 concrete phrases for executive summary."""
-    warnings = [w for w in (warning_items or []) if str(w.get("type", "")).lower() in {"qc", "realism"}]
-    if not warnings:
-        return ""
+def summarizeWarningsForSummary(
+    qc_warnings: list[str],
+    realism_flags: list[str],
+) -> dict[str, str]:
+    """Summarize QC and realism concerns into deterministic, concrete phrases."""
 
-    phrases: list[str] = []
-    seen: set[str] = set()
+    def _top_phrases(texts: list[str], phrase_rules: list[tuple[str, list[str]]], fallback: str = "") -> str:
+        normalized = [str(t).lower() for t in (texts or []) if str(t).strip()]
+        if not normalized:
+            return ""
 
-    for item in warnings:
-        code = str(item.get("code", "")).lower()
-        text = str(item.get("message", "")).lower()
-        if "correlation" in code or "correlation" in text:
-            phrase = "low sample correlation"
-        elif "library" in code or "library" in text:
-            phrase = "low library-size pattern"
-        elif "zero" in code or "zero fraction" in text or "sparse" in text:
-            phrase = "high zero-count fraction"
-        elif "outlier" in code or "outlier" in text:
-            phrase = "sample outlier pattern"
-        elif "batch" in code or "batch" in text:
-            phrase = "possible batch structure"
-        elif "canonical" in code or "housekeeping" in code:
-            phrase = "canonical-gene and housekeeping-gene enrichment patterns"
-        elif "pvalue" in code:
-            phrase = "extreme p-value concentration"
+        found: list[str] = []
+        for phrase, keywords in phrase_rules:
+            if any(any(k in text for k in keywords) for text in normalized):
+                found.append(phrase)
+            if len(found) >= 2:
+                break
+
+        if not found and fallback:
+            found = [fallback]
+
+        if len(found) == 2:
+            return f"{found[0]} and {found[1]}"
+        return found[0] if found else ""
+
+    qc_phrase = _top_phrases(
+        qc_warnings,
+        [
+            ("low within-group correlation", ["within-group correlation", "low correlation", "correlation"]),
+            ("reduced library size in one sample", ["library size", "library-size", "low library"]),
+            ("elevated zero-count fraction", ["zero-count", "zero fraction", "sparse"]),
+            ("outlier-like sample pattern", ["outlier", "distance outlier"]),
+            ("potential batch-related structure", ["batch", "confounded"]),
+        ],
+        fallback="multiple QC warnings",
+    )
+
+    realism_lower = [str(f).lower() for f in (realism_flags or []) if str(f).strip()]
+    realism_phrase = ""
+    if realism_lower:
+        has_canonical = any("canonical" in f for f in realism_lower)
+        has_housekeeping = any("housekeeping" in f for f in realism_lower)
+        if has_canonical and has_housekeeping:
+            realism_phrase = "canonical-gene and housekeeping-gene enrichment patterns"
+        elif has_canonical:
+            realism_phrase = "canonical-gene enrichment patterns"
+        elif has_housekeeping:
+            realism_phrase = "housekeeping-gene enrichment patterns"
         else:
-            phrase = "additional technical warning"
+            realism_phrase = _top_phrases(
+                realism_flags,
+                [
+                    ("extreme p-value concentration", ["p-value", "pvalue", "< 1e-6"]),
+                    ("top-ranked gene concentration", ["top-gene dominance", "dominance", "top 5"]),
+                    ("atypical DEG count patterns", ["deg count", "total_deg"]),
+                ],
+                fallback="patterns that raise realism concerns",
+            )
 
-        if phrase not in seen:
-            seen.add(phrase)
-            phrases.append(phrase)
-        if len(phrases) >= 2:
-            break
-
-    return " and ".join(phrases)
+    return {
+        "qc_phrase": qc_phrase,
+        "realism_phrase": realism_phrase,
+    }
 
 
 def generateExecutiveSummary(data: dict[str, Any]) -> str:
@@ -141,7 +168,9 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     pca_separation = str(data.get("pca_separation", "unknown")).strip() or "unknown"
     qc_warnings = [str(w).strip() for w in (data.get("qc_warnings", []) or []) if str(w).strip()]
     realism_flags = [str(f).strip() for f in (data.get("realism_flags", []) or []) if str(f).strip()]
-    warning_items = [w for w in (data.get("warning_items", []) or []) if isinstance(w, dict)]
+    summarized = summarizeWarningsForSummary(qc_warnings=qc_warnings, realism_flags=realism_flags)
+    qc_phrase = summarized.get("qc_phrase", "")
+    realism_phrase = summarized.get("realism_phrase", "")
 
     sentences: list[str] = []
 
@@ -156,23 +185,18 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
 
     sentences.append(f"PCA indicates {pca_separation} separation between groups.")
 
-    if qc_warnings:
-        summarized = summarizeWarningsForSummary(warning_items)
-        if summarized:
-            sentences.append(f"Data quality concerns were identified, including {summarized}.")
+    if qc_warnings and qc_phrase:
+        sentences.append(f"Data quality concerns were identified, including {qc_phrase}.")
 
-    if realism_flags:
-        sentences.append("The DEG profile shows patterns that may indicate potential data realism issues.")
-
-    if n_samples < 4:
-        sentences.append("The small sample size limits statistical power.")
+    if realism_flags and realism_phrase:
+        sentences.append(f"The DEG profile also showed {realism_phrase} that raise realism concerns.")
 
     if qc_warnings or realism_flags:
         sentences.append("Therefore, results should be interpreted with caution.")
     else:
-        sentences.append("No major technical concerns were detected.")
+        sentences.append("No major technical or realism-related concerns were detected.")
 
-    return " ".join(sentences[:5])
+    return " ".join(sentences)
 
 
 def _grouped_warnings(
