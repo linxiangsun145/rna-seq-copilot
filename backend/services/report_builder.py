@@ -90,6 +90,87 @@ def _overall_data_quality(qc: Optional[dict[str, Any]]) -> str:
     return "low"
 
 
+def summarizeWarnings(qc_warnings: list[str]) -> str:
+    """Compress warning messages into 1-2 short deterministic phrases."""
+    warnings = [str(w).strip() for w in (qc_warnings or []) if str(w).strip()]
+    if not warnings:
+        return ""
+
+    phrases: list[str] = []
+    seen: set[str] = set()
+
+    for msg in warnings:
+        text = msg.lower()
+        if "correlation" in text:
+            phrase = "low sample correlation"
+        elif "library" in text:
+            phrase = "library size imbalance"
+        elif "zero fraction" in text or "sparse" in text:
+            phrase = "high zero-count fraction"
+        elif "outlier" in text:
+            phrase = "sample outlier pattern"
+        elif "batch" in text:
+            phrase = "possible batch structure"
+        elif "realism" in text:
+            phrase = "realism-related warning"
+        else:
+            phrase = "other QC warning"
+
+        if phrase not in seen:
+            seen.add(phrase)
+            phrases.append(phrase)
+        if len(phrases) >= 2:
+            break
+
+    return " and ".join(phrases)
+
+
+def generateExecutiveSummary(data: dict[str, Any]) -> str:
+    """Build a deterministic, publication-style executive summary from structured inputs."""
+    n_samples = int(data.get("n_samples", 0) or 0)
+    groups = [str(g) for g in (data.get("groups", []) or []) if str(g).strip()]
+    groups_text = ", ".join(groups) if groups else "unspecified groups"
+
+    deg_up = int(data.get("deg_up", 0) or 0)
+    deg_down = int(data.get("deg_down", 0) or 0)
+    total_deg = deg_up + deg_down
+
+    pca_separation = str(data.get("pca_separation", "unknown")).strip() or "unknown"
+    qc_warnings = [str(w).strip() for w in (data.get("qc_warnings", []) or []) if str(w).strip()]
+    realism_flags = [str(f).strip() for f in (data.get("realism_flags", []) or []) if str(f).strip()]
+
+    sentences: list[str] = []
+
+    sentences.append(f"This analysis includes {n_samples} samples across {groups_text}.")
+
+    if total_deg > 0:
+        sentences.append(
+            f"A total of {total_deg} differentially expressed genes were identified ({deg_up} upregulated, {deg_down} downregulated)."
+        )
+    else:
+        sentences.append("No significant differentially expressed genes were detected.")
+
+    sentences.append(f"PCA indicates {pca_separation} separation between groups.")
+
+    if qc_warnings:
+        summarized = summarizeWarnings(qc_warnings)
+        if summarized:
+            sentences.append(f"Data quality concerns were identified, including {summarized}.")
+
+    if realism_flags:
+        sentences.append("The DEG profile shows patterns that may indicate potential data realism issues.")
+
+    if n_samples < 4:
+        sentences.append("The small sample size limits statistical power.")
+
+    if qc_warnings or realism_flags:
+        sentences.append("Therefore, results should be interpreted with caution.")
+    else:
+        sentences.append("No major technical concerns were detected.")
+
+    return " ".join(sentences)
+
+
 def _grouped_warnings(
     summary: dict[str, Any],
     qc: Optional[dict[str, Any]],
@@ -686,6 +767,20 @@ def build_report(
         interpretation_confidence.get("level", "MEDIUM"),
         interpretation_confidence.get("reasons", []),
     )
+    executive_summary = generateExecutiveSummary(
+        {
+            "n_samples": summary_data.get("n_samples", 0),
+            "groups": groups,
+            "deg_up": summary_data.get("deg_up", 0),
+            "deg_down": summary_data.get("deg_down", 0),
+            "pca_separation": summary_data.get("pca_separation", "unknown"),
+            "qc_warnings": [
+                *((qc_report or {}).get("qc_critical", []) if isinstance(qc_report, dict) else []),
+                *((qc_report or {}).get("qc_warnings", []) if isinstance(qc_report, dict) else []),
+            ],
+            "realism_flags": (realism or {}).get("realism_flags", []) or [],
+        }
+    )
 
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -702,6 +797,7 @@ def build_report(
         realism_flag_map=realism_flag_map,
         interpretation_confidence=interpretation_confidence,
         interpretation_limitation_text=interpretation_limitation_text,
+        executive_summary=executive_summary,
         analysis_methods=analysis_methods,
         methods_paragraph=methods_paragraph,
         results_paragraph=results_paragraph,

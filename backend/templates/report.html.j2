@@ -245,6 +245,11 @@
     </div>
 
     <div class="section">
+      <h2>Executive Summary</h2>
+      <div class="box">{{ executive_summary }}</div>
+    </div>
+
+    <div class="section">
       <h2>2. Overall Assessment</h2>
       <div class="grid-2">
         <div class="box {% if overall_data_quality == 'high' %}box-critical{% elif overall_data_quality == 'moderate' %}box-warning{% else %}box-ok{% endif %}">
