@@ -41,7 +41,9 @@
 }
 
 .qc_plot_sample_correlation <- function(vsd, meta, outfile) {
-  corr_mat <- cor(assay(vsd), method = "pearson")
+  vst_mat <- assay(vsd)
+  prep <- .qc_prepare_vst_for_sample_correlation(vst_mat, colnames(vst_mat))
+  corr_mat <- cor(prep$expr, method = "pearson", use = "pairwise.complete.obs")
 
   ann_col <- NULL
   if (ncol(meta) > 0) {
@@ -159,6 +161,51 @@
   ifelse(is.finite(x), x, NA_real_)
 }
 
+.qc_extract_sample_ids <- function(meta) {
+  if ("sample_id" %in% colnames(meta)) {
+    return(as.character(meta$sample_id))
+  }
+  if ("sample" %in% colnames(meta)) {
+    return(as.character(meta$sample))
+  }
+  rownames(meta)
+}
+
+.qc_align_metadata_strict <- function(meta, sample_names) {
+  meta_ids <- .qc_extract_sample_ids(meta)
+  if (is.null(meta_ids)) {
+    stop("Metadata must provide sample IDs via rownames, sample_id, or sample column")
+  }
+  if (anyNA(meta_ids) || any(meta_ids == "")) {
+    stop("Metadata sample IDs contain NA/empty values")
+  }
+  if (anyDuplicated(meta_ids) > 0) {
+    dup <- unique(meta_ids[duplicated(meta_ids)])
+    stop(sprintf("Duplicate metadata sample IDs detected: %s", paste(dup, collapse = ", ")))
+  }
+  if (!setequal(sample_names, meta_ids)) {
+    missing_in_meta <- setdiff(sample_names, meta_ids)
+    missing_in_counts <- setdiff(meta_ids, sample_names)
+    stop(sprintf(
+      "Counts/metadata sample mismatch. Missing in metadata: [%s]; missing in counts: [%s]",
+      paste(missing_in_meta, collapse = ", "),
+      paste(missing_in_counts, collapse = ", ")
+    ))
+  }
+
+  idx <- match(sample_names, meta_ids)
+  meta_aligned <- meta[idx, , drop = FALSE]
+  aligned_ids <- meta_ids[idx]
+
+  if (!identical(as.character(sample_names), as.character(aligned_ids))) {
+    stop("Metadata alignment failed: colnames(expression_matrix) != metadata sample IDs after reordering")
+  }
+
+  rownames(meta_aligned) <- sample_names
+  attr(meta_aligned, "sample_ids") <- as.character(aligned_ids)
+  meta_aligned
+}
+
 .qc_compute_anova_r2 <- function(score, grp) {
   if (length(unique(grp)) < 2) return(NA_real_)
   fit <- lm(score ~ grp)
@@ -257,9 +304,22 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     stop("counts_mat must have sample columns")
   }
 
+  meta <- .qc_align_metadata_strict(meta, sample_names)
+  meta_sample_ids <- attr(meta, "sample_ids")
+
+  cat(sprintf("[QC] Raw count matrix dims: genes=%d, samples=%d\n", nrow(counts_mat), ncol(counts_mat)))
+  cat(sprintf("[QC] Transformed matrix dims: rows=%d, cols=%d\n", nrow(vst_mat), ncol(vst_mat)))
+  cat(sprintf("[QC] Raw count colnames head: %s\n", paste(utils::head(colnames(counts_mat), 10), collapse = ", ")))
+  cat(sprintf("[QC] VST colnames head: %s\n", paste(utils::head(colnames(vst_mat), 10), collapse = ", ")))
+  cat(sprintf("[QC] Metadata sample order head: %s\n", paste(utils::head(meta_sample_ids, 10), collapse = ", ")))
+
   prep <- .qc_prepare_vst_for_sample_correlation(vst_mat, sample_names)
   vst_for_corr <- prep$expr
   cat(sprintf("[QC] Correlation matrix orientation: %s (genes=%d, samples=%d)\n", prep$orientation, nrow(vst_for_corr), ncol(vst_for_corr)))
+
+  if (!identical(as.character(colnames(vst_for_corr)), as.character(meta_sample_ids))) {
+    stop("Sample alignment assertion failed: colnames(expression_matrix) != metadata$sample_id (or equivalent IDs)")
+  }
 
   # Required plots
   .qc_plot_sample_distance(vsd, meta, file.path(plots_dir, "sample_distance_heatmap.png"))
@@ -276,6 +336,9 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
   )
 
   corr_mat <- cor(vst_for_corr, method = "pearson", use = "pairwise.complete.obs")
+  if (!isTRUE(all.equal(corr_mat, t(corr_mat), tolerance = 1e-10, check.attributes = FALSE))) {
+    stop("Sample correlation matrix is not symmetric. Check matrix orientation and sample alignment.")
+  }
   lib_sizes <- colSums(counts_mat)
   zero_fraction <- colMeans(counts_mat == 0)
 
@@ -301,11 +364,12 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
   batch_flags <- list()
   outlier_samples <- character(0)
 
-  sample_warning_count <- setNames(rep(0L, length(sample_names)), sample_names)
+  sample_warning_level_count <- setNames(rep(0L, length(sample_names)), sample_names)
   sample_critical_lib <- setNames(rep(FALSE, length(sample_names)), sample_names)
   sample_critical_corr <- setNames(rep(FALSE, length(sample_names)), sample_names)
   within_group_corr <- setNames(rep(NA_real_, length(sample_names)), sample_names)
   peer_corr_debug <- setNames(vector("list", length(sample_names)), sample_names)
+  peer_samples_debug <- setNames(vector("list", length(sample_names)), sample_names)
   sample_qc_reasons <- setNames(vector("list", length(sample_names)), sample_names)
 
   # Library size + zero-fraction flags
@@ -325,18 +389,17 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
         threshold = round(0.5 * global_median_lib, 2),
         rule = "library_size < 50% median"
       )
-      sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+      sample_warning_level_count[[s]] <- sample_warning_level_count[[s]] + 1L
       .add_warning("warning", "low_library_size_warning", sprintf("Low library size detected for %s (%.0f vs median %.0f).", s, val, global_median_lib), sample = s, metric = "library_size")
     }
 
     z <- as.numeric(zero_fraction[[s]])
     if (z > 0.4) {
       zero_fraction_flags[[length(zero_fraction_flags) + 1]] <- list(sample = s, level = "critical", value = round(z, 4), threshold = 0.4, rule = "zero_fraction > 40%")
-      sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
       .add_warning("critical", "high_zero_fraction_critical", sprintf("High zero-count fraction detected for %s (%.1f%% > 40%%).", s, 100 * z), sample = s, metric = "zero_fraction")
     } else if (z > 0.2) {
       zero_fraction_flags[[length(zero_fraction_flags) + 1]] <- list(sample = s, level = "warning", value = round(z, 4), threshold = 0.2, rule = "zero_fraction > 20%")
-      sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+      sample_warning_level_count[[s]] <- sample_warning_level_count[[s]] + 1L
       .add_warning("warning", "high_zero_fraction_warning", sprintf("Elevated zero-count fraction detected for %s (%.1f%% > 20%%).", s, 100 * z), sample = s, metric = "zero_fraction")
     }
   }
@@ -347,6 +410,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     if (length(group_samples) < 2) {
       for (s in group_samples) {
         peer_corr_debug[[s]] <- list()
+        peer_samples_debug[[s]] <- list()
         sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("no peer in group '%s'; correlation flag skipped", g))
       }
       next
@@ -354,6 +418,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
 
     for (s in group_samples) {
       peers <- setdiff(group_samples, s)
+      peer_samples_debug[[s]] <- as.list(peers)
       peer_vals <- as.numeric(corr_mat[s, peers, drop = TRUE])
       names(peer_vals) <- peers
       peer_vals <- peer_vals[is.finite(peer_vals)]
@@ -368,7 +433,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
         .add_warning("critical", "low_within_group_correlation_critical", sprintf("Low within-group correlation detected for %s (%.3f < 0.75).", s, m), sample = s, metric = "mean_within_group_correlation")
         sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("critical correlation: %.3f < 0.75", m))
       } else if (is.finite(m) && m < 0.85) {
-        sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+        sample_warning_level_count[[s]] <- sample_warning_level_count[[s]] + 1L
         correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "warning", mean_correlation = round(m, 4), threshold = 0.85, rule = "mean_within_group_correlation < 0.85")
         .add_warning("warning", "low_within_group_correlation_warning", sprintf("Low within-group correlation detected for %s (%.3f < 0.85).", s, m), sample = s, metric = "mean_within_group_correlation")
         sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("warning correlation: %.3f < 0.85", m))
@@ -385,14 +450,29 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
   ))
   corr_flagged_samples <- corr_flagged_samples[!is.na(corr_flagged_samples) & corr_flagged_samples != ""]
   corr_flag_ratio <- if (length(sample_names) > 0) length(unique(corr_flagged_samples)) / length(sample_names) else 0
-  if (corr_flag_ratio >= 0.8 && length(sample_names) >= 4) {
+  if (corr_flag_ratio > 0.7 && length(sample_names) >= 4) {
     .add_warning(
       "warning",
       "correlation_sanity_check_warning",
-      sprintf("Sanity check: %.0f%% of samples were correlation-flagged; verify group labels and correlation orientation.", 100 * corr_flag_ratio),
+      sprintf("Correlation logic may be misconfigured or dataset may be globally inconsistent (%.0f%% samples correlation-flagged).", 100 * corr_flag_ratio),
       metric = "mean_within_group_correlation"
     )
     cat(sprintf("[QC][WARN] Sanity check triggered: %d/%d samples flagged by correlation\n", length(unique(corr_flagged_samples)), length(sample_names)))
+  }
+
+  control_groups <- names(grp_tbl)[grepl("(^|[^A-Za-z0-9])(control|ctrl)([^A-Za-z0-9]|$)", names(grp_tbl), ignore.case = TRUE)]
+  if (length(control_groups) > 0) {
+    control_samples <- sample_names[grp %in% control_groups]
+    control_samples <- control_samples[is.finite(within_group_corr[control_samples])]
+    if (length(control_samples) >= 2 && all(within_group_corr[control_samples] < 0)) {
+      .add_warning(
+        "warning",
+        "implausible_control_correlation_warning",
+        "Implausible control correlation pattern detected. Check matrix orientation and metadata alignment.",
+        metric = "mean_within_group_correlation"
+      )
+      cat(sprintf("[QC][WARN] All control replicates have negative within-group correlation: %s\n", paste(control_samples, collapse = ",")))
+    }
   }
 
   # Optional outlier warning (centroid distance) for groups with n>=3
@@ -409,7 +489,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     if (length(bad) > 0) {
       outlier_samples <- unique(c(outlier_samples, bad))
       for (s in bad) {
-        sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+        sample_warning_level_count[[s]] <- sample_warning_level_count[[s]] + 1L
         .add_warning("warning", "distance_outlier_warning", sprintf("Distance outlier detected for %s in group %s (%.3f > %.3f).", s, g, sample_to_centroid[[s]], thr), sample = s, metric = "sample_distance")
       }
     }
@@ -438,6 +518,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
   # critical library size OR critical correlation OR multiple warnings
   low_quality_samples <- character(0)
   per_sample_qc_metrics <- list()
+  per_sample_correlation_debug <- list()
   for (s in sample_names) {
     qc_flags <- character(0)
     if (isTRUE(sample_critical_lib[[s]])) {
@@ -447,9 +528,9 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     if (isTRUE(sample_critical_corr[[s]])) {
       qc_flags <- c(qc_flags, "low_within_group_correlation_critical")
     }
-    if (sample_warning_count[[s]] >= 2) {
+    if (sample_warning_level_count[[s]] >= 2) {
       qc_flags <- c(qc_flags, "multiple_qc_warnings")
-      sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("multiple warnings (%d)", sample_warning_count[[s]]))
+      sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("multiple warnings (%d)", sample_warning_level_count[[s]]))
     }
 
     condition <- grp[which(sample_names == s)][1]
@@ -463,25 +544,24 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     }
 
     decision <- if (length(qc_flags) > 0) "low_quality" else "retain"
-    peer_debug_text <- "none"
-    if (length(peer_corr_debug[[s]]) > 0) {
-      peer_pairs <- unlist(peer_corr_debug[[s]], use.names = TRUE)
-      peer_debug_text <- paste(sprintf("%s=%.4f", names(peer_pairs), as.numeric(peer_pairs)), collapse = ",")
-    }
 
-    cat(sprintf("[QC][DEBUG] sample=%s condition=%s lib=%.0f mean_corr=%s peers=[%s] decision=%s reasons=%s\\n",
-      s,
-      condition,
-      as.numeric(lib_sizes[[s]]),
-      ifelse(is.finite(within_group_corr[[s]]), sprintf("%.4f", within_group_corr[[s]]), "NA"),
-      peer_debug_text,
-      decision,
-      paste(unique(sample_qc_reasons[[s]]), collapse = "; ")
-    ))
+    sample_debug <- list(
+      sample = s,
+      condition = condition,
+      peer_samples = as.list(unname(unlist(peer_samples_debug[[s]]))),
+      peer_correlations = peer_corr_debug[[s]],
+      mean_within_group_correlation = ifelse(is.finite(within_group_corr[[s]]), round(within_group_corr[[s]], 4), NA_real_),
+      library_size = as.numeric(lib_sizes[[s]]),
+      zero_fraction = round(as.numeric(zero_fraction[[s]]), 4),
+      qc_flags = as.list(unique(qc_flags))
+    )
+    per_sample_correlation_debug[[length(per_sample_correlation_debug) + 1]] <- sample_debug
+    cat(sprintf("[QC][DEBUG] %s\n", jsonlite::toJSON(sample_debug, auto_unbox = TRUE)))
 
     per_sample_qc_metrics[[length(per_sample_qc_metrics) + 1]] <- list(
       sample = s,
       condition = condition,
+      peer_samples = as.list(unname(unlist(peer_samples_debug[[s]]))),
       library_size = as.numeric(lib_sizes[[s]]),
       zero_fraction = round(as.numeric(zero_fraction[[s]]), 4),
       mean_within_group_correlation = ifelse(is.finite(within_group_corr[[s]]), round(within_group_corr[[s]], 4), NA_real_),
@@ -491,6 +571,10 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
       qc_flags = as.list(unique(qc_flags))
     )
   }
+
+  corr_debug_path <- file.path(results_dir, "qc_correlation_debug.json")
+  write(jsonlite::toJSON(per_sample_correlation_debug, auto_unbox = TRUE, pretty = TRUE), corr_debug_path)
+  cat(sprintf("[QC] qc_correlation_debug.json written: %s\n", corr_debug_path))
 
   qc_metrics <- list(
     library_size = list(
