@@ -65,6 +65,50 @@ def _extract_qc(job_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+def _infer_realism_code_from_message(message: str, severity: str, idx: int) -> str:
+    text = str(message or "").lower()
+    sev = "critical" if str(severity).lower() == "critical" else "warning"
+
+    if "canonical gene overrepresentation" in text:
+        return f"canonical_top20_{sev}"
+    if "housekeeping gene signal" in text or "housekeeping gene warning" in text:
+        return f"housekeeping_top20_{sev}"
+    if "housekeeping strong differential expression" in text:
+        return "housekeeping_strong_effect_critical"
+    if "deg count sanity" in text and "total_deg = 0" in text:
+        return "deg_count_zero_critical"
+    if "deg count sanity" in text and "too_high" in text:
+        return "deg_count_too_high_critical"
+    if "deg count sanity" in text and "< 10" in text:
+        return "deg_count_low_warning"
+    if "deg count sanity" in text and "> 5000" in text:
+        return "deg_count_high_warning"
+    if "p-value anomaly critical" in text:
+        return "pvalue_tiny_fraction_critical"
+    if "p-value anomaly warning" in text and "< 1e-6" in text:
+        return "pvalue_tiny_fraction_warning"
+    if "excessively uniform" in text:
+        return "pvalue_uniform_non_sig_warning"
+    if "bimodal_tail_pileup" in text or "simultaneous pile-up" in text:
+        return "pvalue_bimodal_tail_pileup_warning"
+    if "effect-size plausibility critical" in text:
+        return "effect_size_extreme_critical"
+    if "effect-size plausibility warning" in text:
+        return "effect_size_large_warning"
+    if "top-gene dominance" in text and "marker" in text:
+        return "top5_marker_dominance_warning"
+    if "top-gene dominance" in text:
+        return "top5_dominance_warning"
+    if "qc consistency warning" in text and "deg signal" in text:
+        return "qc_consistency_deg_vs_quality_warning"
+    if "qc consistency warning" in text and "n=2 replicates" in text:
+        return "qc_consistency_separation_vs_rep_warning"
+    if "qc consistency critical" in text and "confounded with batch" in text:
+        return "qc_batch_confounded_critical"
+
+    return f"realism_{sev}_{idx+1}"
+
+
 def validate_realism(job_dir: Path, summary_dict: dict[str, Any]) -> RealismValidation:
     warnings: list[str] = []
     critical: list[str] = []
@@ -338,11 +382,7 @@ def validate_realism(job_dir: Path, summary_dict: dict[str, Any]) -> RealismVali
 
     warning_items: list[dict[str, Any]] = []
     for idx, msg in enumerate(critical):
-        code = (
-            realism_flags[idx]
-            if idx < len(realism_flags)
-            else f"realism_critical_{idx+1}"
-        )
+        code = _infer_realism_code_from_message(msg, "critical", idx)
         warning_items.append(
             {
                 "type": "realism",
@@ -354,14 +394,8 @@ def validate_realism(job_dir: Path, summary_dict: dict[str, Any]) -> RealismVali
             }
         )
 
-    warn_offset = len(critical)
     for idx, msg in enumerate(warnings):
-        flag_index = warn_offset + idx
-        code = (
-            realism_flags[flag_index]
-            if flag_index < len(realism_flags)
-            else f"realism_warning_{idx+1}"
-        )
+        code = _infer_realism_code_from_message(msg, "warning", idx)
         warning_items.append(
             {
                 "type": "realism",

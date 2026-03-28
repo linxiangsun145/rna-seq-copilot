@@ -260,8 +260,10 @@ def _normalize_text(text: str) -> str:
         return ""
     cleaned = cleaned.replace("Warning realism flag:", "")
     cleaned = cleaned.replace("Critical realism flag:", "")
-    cleaned = cleaned.replace("warning", "")
+    cleaned = re.sub(r"\bwarning\b:?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bcritical\b:?", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    cleaned = cleaned.replace(" :", ":")
     return cleaned[:1].upper() + cleaned[1:] if cleaned else ""
 
 
@@ -619,32 +621,112 @@ def _expand_groups_for_assessment(
     return [str(g) for g in (groups or []) if str(g).strip()]
 
 
-def _assessment_phrase(code: str, message: str, sample: str = "", metric: str = "") -> str:
-    c = str(code or "").lower()
-    s = str(sample or "").strip()
-    m = str(message or "").strip()
+def _assessment_issue_from_warning(
+    item: dict[str, Any],
+    group_counts: Counter[str],
+) -> dict[str, Any]:
+    issue_type = str(item.get("type", "statistical")).lower() or "statistical"
+    code = str(item.get("code", "")).strip() or "unknown_issue"
+    severity = str(item.get("severity", "warning")).lower()
+    message = str(item.get("message", "")).strip()
+    sample = str(item.get("sample", "")).strip()
+    metric = str(item.get("metric", "")).strip()
+
+    issue_name = "Data quality issue"
+    evidence: Optional[str] = None
+
+    c = code.lower()
+    m = message.lower()
+
+    # Message semantics take precedence over code to avoid swapped canonical/housekeeping labels.
+    is_housekeeping = ("housekeeping" in m) or ("housekeeping" in c)
+    is_canonical = ("canonical" in m) or ("canonical" in c)
 
     if "group_imbalance" in c:
-        ratio_match = re.search(r"ratio\s*([0-9.]+)", m.lower())
-        evidence = f"ratio {ratio_match.group(1)}" if ratio_match else m
-        return f"Group imbalance detected ({evidence})."
-    if "low_library_size" in c:
-        return f"Low library size detected ({m})."
-    if "correlation" in c:
-        return f"Low within-group correlation detected ({m})."
-    if "zero_fraction" in c or "zero" in c:
-        return f"High zero-count fraction detected ({m})."
-    if "canonical" in c:
-        return f"Canonical-gene enrichment detected ({m})."
-    if "housekeeping" in c:
-        return f"Housekeeping-gene enrichment detected ({m})."
-    if "pvalue" in c:
-        return f"P-value distribution anomaly detected ({m})."
-    if "top5" in c or "dominance" in c:
+        issue_name = "Group imbalance"
+        ratio_match = re.search(r"ratio\s*([0-9.]+)", m)
+        if len(group_counts) >= 2:
+            sorted_groups = sorted(group_counts.items(), key=lambda x: (x[1], x[0]))
+            low_group, low_n = sorted_groups[0]
+            high_group, high_n = sorted_groups[-1]
+            ratio = (high_n / low_n) if low_n > 0 else float("inf")
+            if ratio_match:
+                evidence = f"{low_n} {low_group} vs {high_n} {high_group}; ratio {float(ratio_match.group(1)):.2f}"
+            else:
+                evidence = f"{low_n} {low_group} vs {high_n} {high_group}; ratio {ratio:.2f}"
+        elif ratio_match:
+            evidence = f"ratio {float(ratio_match.group(1)):.2f}"
+    elif "low_library_size" in c or "library_size" in c:
+        issue_name = f"Low library size{' for ' + sample if sample else ''}"
+        parsed = re.search(r"for\s+([^\s]+)\s*\(([^\)]+)\)", message)
+        if parsed:
+            sample_name = parsed.group(1)
+            issue_name = f"Low library size for {sample_name}"
+            evidence = parsed.group(2)
+        elif message:
+            evidence = _normalize_text(message)
+    elif "correlation" in c:
+        issue_name = f"Low within-group correlation{' for ' + sample if sample else ''}"
+        if message:
+            evidence = _normalize_text(message)
+    elif "zero_fraction" in c or "zero" in c:
+        issue_name = f"High zero-count fraction{' for ' + sample if sample else ''}"
+        if message:
+            evidence = _normalize_text(message)
+    elif "top5" in c or "dominance" in c or "top-gene dominance" in m:
+        issue_name = "Top-ranked gene concentration"
+        if message:
+            evidence = _normalize_text(message)
+        if not evidence:
+            evidence = "dominance among leading genes"
+    elif is_housekeeping and not is_canonical:
+        issue_name = "Housekeeping-gene enrichment"
+        hk_match = re.search(r"(\d+\s+housekeeping\s+genes?\s+in\s+top\s+20)", message, flags=re.IGNORECASE)
+        if hk_match:
+            evidence = f"{hk_match.group(1)} DEGs"
+        elif message:
+            evidence = _normalize_text(message)
+    elif is_canonical:
+        issue_name = "Canonical-gene enrichment"
+        canonical_match = re.search(r"(\d+\s*/\s*20\s+canonical\s+genes)", message, flags=re.IGNORECASE)
+        if canonical_match:
+            evidence = f"{canonical_match.group(1)} among top-ranked DEGs"
+        elif message:
+            evidence = _normalize_text(message)
+    elif "pvalue" in c or "p_value" in c:
+        issue_name = "P-value distribution anomaly"
+        if message:
+            evidence = _normalize_text(message)
+    elif issue_type == "statistical":
+        issue_name = "Statistical consistency issue"
+        if message:
+            evidence = _normalize_text(message)
+
+    if not evidence and message:
+        evidence = _normalize_text(message)
+    if not evidence and ("top5" in c or "dominance" in c):
+        evidence = "dominance among leading genes"
+    if not evidence and metric:
+        evidence = _normalize_text(metric.replace("_", " "))
+
+    return {
+        "type": issue_type,
+        "code": code,
+        "severity": "critical" if severity == "critical" else "warning",
+        "message": message,
+        "evidence": evidence,
+        "issue": issue_name,
+    }
+
+
+def _assessment_phrase(issue: dict[str, Any]) -> str:
+    issue_name = str(issue.get("issue", "Data quality issue")).strip() or "Data quality issue"
+    evidence = str(issue.get("evidence", "")).strip()
+    if evidence:
+        return f"{issue_name} detected ({evidence})."
+    if "top-ranked gene concentration" in issue_name.lower():
         return "Top-ranked gene concentration detected (dominance among leading genes)."
-    if m:
-        return f"{_normalize_text(m)} detected ({m})."
-    return f"{_normalize_text(code.replace('_', ' '))} detected."
+    return f"{issue_name} detected."
 
 
 def generateAssessmentBasis(
@@ -652,19 +734,33 @@ def generateAssessmentBasis(
     n_samples: int,
     groups: list[str],
 ) -> list[str]:
+    _ = n_samples  # Kept for function signature compatibility.
+
     items = [w for w in (warning_items or []) if isinstance(w, dict)]
-    dedup_by_code: dict[str, dict[str, Any]] = {}
-    for item in items:
-        code = str(item.get("code", "")).strip()
-        if not code:
-            code = f"fallback_{len(dedup_by_code)+1}"
-        if code not in dedup_by_code:
-            dedup_by_code[code] = item
+    group_counts = Counter([str(g).strip() for g in (groups or []) if str(g).strip()])
+
+    normalized_issues = [_assessment_issue_from_warning(item, group_counts) for item in items]
+
+    # Deduplicate by code while preserving code-level evidence aggregation.
+    by_code: dict[str, dict[str, Any]] = {}
+    for issue in normalized_issues:
+        code = str(issue.get("code", "")).strip() or "unknown_issue"
+        if code not in by_code:
+            by_code[code] = issue
+        else:
+            current = by_code[code]
+            current_evidence = str(current.get("evidence", "")).strip()
+            new_evidence = str(issue.get("evidence", "")).strip()
+            if new_evidence and new_evidence not in current_evidence:
+                merged = "; ".join([x for x in [current_evidence, new_evidence] if x])
+                current["evidence"] = merged
+            if str(current.get("severity", "warning")).lower() != "critical" and str(issue.get("severity", "warning")).lower() == "critical":
+                current["severity"] = "critical"
 
     severity_order = {"critical": 0, "warning": 1}
     type_order = {"qc": 0, "realism": 1, "statistical": 2}
     ordered = sorted(
-        dedup_by_code.values(),
+        by_code.values(),
         key=lambda x: (
             severity_order.get(str(x.get("severity", "warning")).lower(), 1),
             type_order.get(str(x.get("type", "statistical")).lower(), 2),
@@ -672,31 +768,10 @@ def generateAssessmentBasis(
         ),
     )
 
-    basis = [
-        _assessment_phrase(
-            code=str(x.get("code", "")),
-            message=str(x.get("message", "")),
-            sample=str(x.get("sample", "") or ""),
-            metric=str(x.get("metric", "") or ""),
-        )
-        for x in ordered
-    ]
+    if not ordered:
+        return ["No major quality or realism concerns detected."]
 
-    group_counts = Counter([g for g in groups if g])
-    if len(group_counts) >= 2:
-        min_count = min(group_counts.values())
-        max_count = max(group_counts.values())
-        if min_count != max_count:
-            ratio = (max_count / min_count) if min_count > 0 else float("inf")
-            basis.append(
-                f"Group imbalance detected ({min_count} vs {max_count} samples; ratio {ratio:.2f})."
-            )
-
-    if int(n_samples) < 6:
-        basis.append(f"Small sample size detected (n={int(n_samples)}).")
-
-    # Deduplicate final phrasing deterministically.
-    return list(dict.fromkeys(basis))
+    return [_assessment_phrase(issue) for issue in ordered]
 
 
 def build_report(
