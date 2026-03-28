@@ -185,6 +185,7 @@
     .muted { color: var(--muted); }
     .mono { font-family: Consolas, Menlo, monospace; }
     .legend-list li { margin-bottom: 6px; }
+    .row-warning-link { background: #fffdf2; }
     .footer {
       margin-top: 18px;
       text-align: center;
@@ -292,6 +293,30 @@
         </div>
         {% endif %}
       </div>
+
+      {% if qc_metrics_summary and qc_metrics_summary|length > 0 %}
+      <h3>QC Metrics Summary</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Value</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in qc_metrics_summary %}
+          <tr {% if row.linked_warning %}class="row-warning-link"{% endif %}>
+            <td>{{ row.name }}</td>
+            <td>{{ row.value }}</td>
+            <td>
+              <span class="badge {% if row.status == 'CRITICAL' %}badge-critical{% elif row.status == 'WARNING' %}badge-warning{% else %}badge-ok{% endif %}">{{ row.status }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
 
       <h3>QC Metrics</h3>
       <div class="cards">

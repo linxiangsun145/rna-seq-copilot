@@ -129,6 +129,145 @@ def _normalize_text(text: str) -> str:
     return cleaned[:1].upper() + cleaned[1:] if cleaned else ""
 
 
+def _status_rank(status: str) -> int:
+    order = {"OK": 0, "WARNING": 1, "CRITICAL": 2}
+    return order.get(status, 0)
+
+
+def _to_metric_float(value: Any) -> Optional[float]:
+    try:
+        if value in (None, "", "NA", "NaN"):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _extract_metric_value(source: Any, keys: list[str]) -> Optional[float]:
+    if isinstance(source, dict):
+        for key in keys:
+            if key in source:
+                val = _to_metric_float(source.get(key))
+                if val is not None:
+                    return val
+    val = _to_metric_float(source)
+    return val
+
+
+def _warning_matches_metric(message: str, metric_key: str) -> bool:
+    text = str(message or "").lower()
+    if metric_key == "library_size":
+        return ("library size" in text) or ("low library" in text) or ("sequencing depth" in text)
+    if metric_key == "correlation":
+        return ("correlation" in text) or ("low correlation" in text)
+    if metric_key == "zero_fraction":
+        return (
+            ("zero fraction" in text)
+            or ("zero-count" in text)
+            or ("zero count" in text)
+            or ("sparse" in text)
+            or ("sparsity" in text)
+        )
+    if metric_key == "pca_pc1":
+        return ("pca" in text) or ("pc1" in text)
+    return False
+
+
+def computeQCMetrics(
+    qc_metrics: Optional[dict[str, Any]],
+    pca_variance: Optional[dict[str, Any]],
+    qc_warnings: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+    """Compute normalized QC metric rows with explicit status thresholds for report rendering."""
+    if not isinstance(qc_metrics, dict) or not qc_metrics:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    warning_texts = [str(w) for w in (qc_warnings or [])]
+
+    library_size = qc_metrics.get("library_size")
+    lib_ratio = _extract_metric_value(library_size, ["min_median_ratio", "min_to_median", "ratio"])
+    if lib_ratio is None and isinstance(library_size, dict):
+        min_lib = _extract_metric_value(library_size, ["min", "minimum", "min_library_size"])
+        median_lib = _extract_metric_value(library_size, ["median", "median_library_size"])
+        if min_lib is not None and median_lib is not None and median_lib > 0:
+            lib_ratio = min_lib / median_lib
+    if lib_ratio is not None:
+        if lib_ratio < 0.5:
+            lib_status = "CRITICAL"
+        elif lib_ratio < 0.7:
+            lib_status = "WARNING"
+        else:
+            lib_status = "OK"
+        rows.append(
+            {
+                "metric_key": "library_size",
+                "name": "Minimum library size",
+                "value": f"{lib_ratio:.3f} (min/median)",
+                "status": lib_status,
+            }
+        )
+
+    correlation = qc_metrics.get("correlation")
+    corr_mean = _extract_metric_value(correlation, ["mean", "mean_correlation", "average", "avg"])
+    if corr_mean is not None:
+        if corr_mean < 0.8:
+            corr_status = "CRITICAL"
+        elif corr_mean < 0.9:
+            corr_status = "WARNING"
+        else:
+            corr_status = "OK"
+        rows.append(
+            {
+                "metric_key": "correlation",
+                "name": "Sample correlation",
+                "value": f"{corr_mean:.3f}",
+                "status": corr_status,
+            }
+        )
+
+    zero_fraction = qc_metrics.get("zero_fraction")
+    zero_mean = _extract_metric_value(zero_fraction, ["mean", "mean_zero_fraction", "average", "avg"])
+    if zero_mean is not None:
+        if zero_mean > 0.6:
+            zero_status = "CRITICAL"
+        elif zero_mean > 0.4:
+            zero_status = "WARNING"
+        else:
+            zero_status = "OK"
+        rows.append(
+            {
+                "metric_key": "zero_fraction",
+                "name": "Zero count fraction",
+                "value": f"{zero_mean:.3f}",
+                "status": zero_status,
+            }
+        )
+
+    pc1_raw = None
+    if isinstance(pca_variance, dict):
+        pc1_raw = _extract_metric_value(pca_variance, ["pc1", "PC1"])
+    if pc1_raw is not None:
+        pc1_percent = pc1_raw * 100 if pc1_raw <= 1 else pc1_raw
+        pca_status = "WARNING" if pc1_percent < 40 else "OK"
+        rows.append(
+            {
+                "metric_key": "pca_pc1",
+                "name": "PCA variance (PC1)",
+                "value": f"{pc1_percent:.2f}%",
+                "status": pca_status,
+            }
+        )
+
+    for row in rows:
+        linked_warning = any(_warning_matches_metric(w, row["metric_key"]) for w in warning_texts)
+        row["linked_warning"] = linked_warning
+        if linked_warning and _status_rank(row["status"]) < _status_rank("WARNING"):
+            row["status"] = "WARNING"
+
+    return rows
+
+
 def _expand_groups_for_assessment(
     groups: list[str],
     qc: Optional[dict[str, Any]],
@@ -322,6 +461,11 @@ def build_report(
         n_samples=int(summary_data.get("n_samples", 0) or 0),
         groups=groups_for_assessment,
     )
+    qc_metrics_summary = computeQCMetrics(
+        qc_metrics=(qc_report or {}).get("qc_metrics") if isinstance(qc_report, dict) else None,
+        pca_variance=(qc_report or {}).get("pca_variance") if isinstance(qc_report, dict) else None,
+        qc_warnings=(qc_report or {}).get("qc_warnings", []) if isinstance(qc_report, dict) else [],
+    )
 
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -331,6 +475,7 @@ def build_report(
         top_genes_table=top_genes_table,
         warning_groups=warning_groups,
         assessment_basis=assessment_basis,
+        qc_metrics_summary=qc_metrics_summary,
         analysis_methods=analysis_methods,
         methods_paragraph=methods_paragraph,
         results_paragraph=results_paragraph,
