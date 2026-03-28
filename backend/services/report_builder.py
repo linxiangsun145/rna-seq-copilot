@@ -90,31 +90,34 @@ def _overall_data_quality(qc: Optional[dict[str, Any]]) -> str:
     return "low"
 
 
-def summarizeWarnings(qc_warnings: list[str]) -> str:
-    """Compress warning messages into 1-2 short deterministic phrases."""
-    warnings = [str(w).strip() for w in (qc_warnings or []) if str(w).strip()]
+def summarizeWarningsForSummary(warning_items: list[dict[str, Any]]) -> str:
+    """Compress warning items into 1-2 concrete phrases for executive summary."""
+    warnings = [w for w in (warning_items or []) if str(w.get("type", "")).lower() in {"qc", "realism"}]
     if not warnings:
         return ""
 
     phrases: list[str] = []
     seen: set[str] = set()
 
-    for msg in warnings:
-        text = msg.lower()
-        if "correlation" in text:
+    for item in warnings:
+        code = str(item.get("code", "")).lower()
+        text = str(item.get("message", "")).lower()
+        if "correlation" in code or "correlation" in text:
             phrase = "low sample correlation"
-        elif "library" in text:
-            phrase = "library size imbalance"
-        elif "zero fraction" in text or "sparse" in text:
+        elif "library" in code or "library" in text:
+            phrase = "low library-size pattern"
+        elif "zero" in code or "zero fraction" in text or "sparse" in text:
             phrase = "high zero-count fraction"
-        elif "outlier" in text:
+        elif "outlier" in code or "outlier" in text:
             phrase = "sample outlier pattern"
-        elif "batch" in text:
+        elif "batch" in code or "batch" in text:
             phrase = "possible batch structure"
-        elif "realism" in text:
-            phrase = "realism-related warning"
+        elif "canonical" in code or "housekeeping" in code:
+            phrase = "canonical-gene and housekeeping-gene enrichment patterns"
+        elif "pvalue" in code:
+            phrase = "extreme p-value concentration"
         else:
-            phrase = "other QC warning"
+            phrase = "additional technical warning"
 
         if phrase not in seen:
             seen.add(phrase)
@@ -138,6 +141,7 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     pca_separation = str(data.get("pca_separation", "unknown")).strip() or "unknown"
     qc_warnings = [str(w).strip() for w in (data.get("qc_warnings", []) or []) if str(w).strip()]
     realism_flags = [str(f).strip() for f in (data.get("realism_flags", []) or []) if str(f).strip()]
+    warning_items = [w for w in (data.get("warning_items", []) or []) if isinstance(w, dict)]
 
     sentences: list[str] = []
 
@@ -153,7 +157,7 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     sentences.append(f"PCA indicates {pca_separation} separation between groups.")
 
     if qc_warnings:
-        summarized = summarizeWarnings(qc_warnings)
+        summarized = summarizeWarningsForSummary(warning_items)
         if summarized:
             sentences.append(f"Data quality concerns were identified, including {summarized}.")
 
@@ -168,7 +172,7 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     else:
         sentences.append("No major technical concerns were detected.")
 
-    return " ".join(sentences)
+    return " ".join(sentences[:5])
 
 
 def _grouped_warnings(
@@ -176,28 +180,76 @@ def _grouped_warnings(
     qc: Optional[dict[str, Any]],
     realism: Optional[dict[str, Any]],
 ) -> dict[str, list[dict[str, str]]]:
-    grouped = {
-        "qc": [],
-        "realism": [],
-        "statistical": [],
-    }
+    grouped: dict[str, list[dict[str, str]]] = {"qc": [], "realism": [], "statistical": []}
 
-    if qc:
-        for msg in qc.get("qc_critical", []) or []:
-            grouped["qc"].append({"level": "critical", "message": str(msg)})
-        for msg in qc.get("qc_warnings", []) or []:
-            grouped["qc"].append({"level": "warning", "message": str(msg)})
+    collected_items: list[dict[str, Any]] = []
 
-    if realism:
-        for msg in realism.get("critical", []) or []:
-            grouped["realism"].append({"level": "critical", "message": str(msg)})
-        for msg in realism.get("warnings", []) or []:
-            grouped["realism"].append({"level": "warning", "message": str(msg)})
+    if qc and isinstance(qc.get("warning_items"), list) and qc.get("warning_items"):
+        collected_items.extend([w for w in qc.get("warning_items", []) if isinstance(w, dict)])
+    else:
+        for msg in (qc or {}).get("qc_critical", []) or []:
+            collected_items.append({"type": "qc", "severity": "critical", "code": "qc_critical_fallback", "message": str(msg)})
+        for msg in (qc or {}).get("qc_warnings", []) or []:
+            collected_items.append({"type": "qc", "severity": "warning", "code": "qc_warning_fallback", "message": str(msg)})
 
-    for msg in summary.get("warnings", []) or []:
-        grouped["statistical"].append({"level": "warning", "message": str(msg)})
-    for msg in summary.get("data_issues", []) or []:
-        grouped["statistical"].append({"level": "warning", "message": str(msg)})
+    if realism and isinstance(realism.get("warning_items"), list) and realism.get("warning_items"):
+        collected_items.extend([w for w in realism.get("warning_items", []) if isinstance(w, dict)])
+    else:
+        for msg in (realism or {}).get("critical", []) or []:
+            collected_items.append({"type": "realism", "severity": "critical", "code": "realism_critical_fallback", "message": str(msg)})
+        for msg in (realism or {}).get("warnings", []) or []:
+            collected_items.append({"type": "realism", "severity": "warning", "code": "realism_warning_fallback", "message": str(msg)})
+
+    summary_items = summary.get("warning_items", []) or []
+    if isinstance(summary_items, list) and summary_items:
+        collected_items.extend([w for w in summary_items if isinstance(w, dict)])
+    else:
+        for msg in summary.get("warnings", []) or []:
+            collected_items.append({"type": "statistical", "severity": "warning", "code": "summary_warning_fallback", "message": str(msg)})
+        for msg in summary.get("data_issues", []) or []:
+            collected_items.append({"type": "statistical", "severity": "warning", "code": "summary_data_issue_fallback", "message": str(msg)})
+
+    # Deduplicate by code + sample + metric for traceable deterministic rendering.
+    seen: set[str] = set()
+    unique_items: list[dict[str, Any]] = []
+    for item in collected_items:
+        key = "|".join([
+            str(item.get("type", "")),
+            str(item.get("severity", "")),
+            str(item.get("code", "")),
+            str(item.get("sample", "")),
+            str(item.get("metric", "")),
+        ])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_items.append(item)
+
+    severity_order = {"critical": 0, "warning": 1}
+    type_order = {"qc": 0, "realism": 1, "statistical": 2}
+
+    unique_items.sort(
+        key=lambda x: (
+            severity_order.get(str(x.get("severity", "warning")).lower(), 1),
+            type_order.get(str(x.get("type", "statistical")).lower(), 2),
+            str(x.get("code", "")),
+            str(x.get("sample", "")),
+        )
+    )
+
+    for item in unique_items:
+        t = str(item.get("type", "statistical")).lower()
+        if t not in grouped:
+            t = "statistical"
+        grouped[t].append(
+            {
+                "level": "critical" if str(item.get("severity", "warning")).lower() == "critical" else "warning",
+                "message": str(item.get("message", "")),
+                "code": str(item.get("code", "")),
+                "sample": str(item.get("sample", "")) if item.get("sample") is not None else "",
+                "metric": str(item.get("metric", "")) if item.get("metric") is not None else "",
+            }
+        )
 
     return grouped
 
@@ -567,71 +619,84 @@ def _expand_groups_for_assessment(
     return [str(g) for g in (groups or []) if str(g).strip()]
 
 
+def _assessment_phrase(code: str, message: str, sample: str = "", metric: str = "") -> str:
+    c = str(code or "").lower()
+    s = str(sample or "").strip()
+    m = str(message or "").strip()
+
+    if "group_imbalance" in c:
+        ratio_match = re.search(r"ratio\s*([0-9.]+)", m.lower())
+        evidence = f"ratio {ratio_match.group(1)}" if ratio_match else m
+        return f"Group imbalance detected ({evidence})."
+    if "low_library_size" in c:
+        return f"Low library size detected ({m})."
+    if "correlation" in c:
+        return f"Low within-group correlation detected ({m})."
+    if "zero_fraction" in c or "zero" in c:
+        return f"High zero-count fraction detected ({m})."
+    if "canonical" in c:
+        return f"Canonical-gene enrichment detected ({m})."
+    if "housekeeping" in c:
+        return f"Housekeeping-gene enrichment detected ({m})."
+    if "pvalue" in c:
+        return f"P-value distribution anomaly detected ({m})."
+    if "top5" in c or "dominance" in c:
+        return "Top-ranked gene concentration detected (dominance among leading genes)."
+    if m:
+        return f"{_normalize_text(m)} detected ({m})."
+    return f"{_normalize_text(code.replace('_', ' '))} detected."
+
+
 def generateAssessmentBasis(
-    qc_warnings: list[str],
-    realism_flags: list[str],
+    warning_items: list[dict[str, Any]],
     n_samples: int,
     groups: list[str],
 ) -> list[str]:
-    basis: list[str] = []
-    warnings = [str(w).strip() for w in (qc_warnings or []) if str(w).strip()]
-    flags = [str(f).strip() for f in (realism_flags or []) if str(f).strip()]
+    items = [w for w in (warning_items or []) if isinstance(w, dict)]
+    dedup_by_code: dict[str, dict[str, Any]] = {}
+    for item in items:
+        code = str(item.get("code", "")).strip()
+        if not code:
+            code = f"fallback_{len(dedup_by_code)+1}"
+        if code not in dedup_by_code:
+            dedup_by_code[code] = item
 
-    corr_samples: set[str] = set()
-    for w in warnings:
-        m = re.search(r"Sample\s+'([^']+)'\s+warning mean correlation", w)
-        if m:
-            corr_samples.add(m.group(1))
-    if corr_samples:
-        basis.append(f"{len(corr_samples)} sample(s) showed low inter-sample correlation.")
+    severity_order = {"critical": 0, "warning": 1}
+    type_order = {"qc": 0, "realism": 1, "statistical": 2}
+    ordered = sorted(
+        dedup_by_code.values(),
+        key=lambda x: (
+            severity_order.get(str(x.get("severity", "warning")).lower(), 1),
+            type_order.get(str(x.get("type", "statistical")).lower(), 2),
+            str(x.get("code", "")),
+        ),
+    )
 
-    for w in warnings:
-        if "warning mean correlation" in w.lower():
-            continue
-        pretty = _normalize_text(w)
-        if pretty and pretty not in basis:
-            basis.append(pretty)
-
-    realism_map = {
-        "canonical_top20_critical": "Canonical genes are overrepresented in the top DEG list.",
-        "canonical_top20_warning": "Canonical genes are moderately overrepresented in the top DEG list.",
-        "housekeeping_top20_critical": "Housekeeping genes are strongly represented among top DEGs.",
-        "housekeeping_top20_warning": "Housekeeping genes appear in top DEGs.",
-        "housekeeping_strong_effect_critical": "Housekeeping genes show unusually strong differential effects.",
-        "deg_count_zero_critical": "No DEGs passed significance thresholds.",
-        "deg_count_too_high_critical": "DEG count is implausibly high.",
-        "deg_count_low_warning": "DEG count is very low.",
-        "deg_count_high_warning": "DEG count is unusually high.",
-        "pvalue_tiny_fraction_critical": "Anomalous concentration of extremely small p-values detected.",
-        "pvalue_tiny_fraction_warning": "High fraction of very small p-values detected.",
-        "pvalue_uniform_non_sig_warning": "Non-significant p-values appear overly uniform.",
-        "pvalue_bimodal_tail_pileup_warning": "P-values show suspicious pile-up at both tails.",
-        "effect_size_extreme_critical": "A large fraction of DEGs has extreme effect sizes.",
-        "effect_size_large_warning": "Many DEGs have large effect sizes.",
-        "top_gene_dominance_warning": "Top-ranked genes dominate the significance signal.",
-    }
-
-    for flag in flags:
-        msg = realism_map.get(flag)
-        if not msg:
-            msg = _normalize_text(flag.replace("_", " "))
-        if msg and msg not in basis:
-            basis.append(msg)
+    basis = [
+        _assessment_phrase(
+            code=str(x.get("code", "")),
+            message=str(x.get("message", "")),
+            sample=str(x.get("sample", "") or ""),
+            metric=str(x.get("metric", "") or ""),
+        )
+        for x in ordered
+    ]
 
     group_counts = Counter([g for g in groups if g])
     if len(group_counts) >= 2:
         min_count = min(group_counts.values())
         max_count = max(group_counts.values())
         if min_count != max_count:
-            basis.append(f"Group imbalance observed ({min_count} vs {max_count} samples).")
+            ratio = (max_count / min_count) if min_count > 0 else float("inf")
+            basis.append(
+                f"Group imbalance detected ({min_count} vs {max_count} samples; ratio {ratio:.2f})."
+            )
 
-    try:
-        if int(n_samples) < 6:
-            basis.append(f"Small sample size warning: only {int(n_samples)} samples available.")
-    except Exception:
-        pass
+    if int(n_samples) < 6:
+        basis.append(f"Small sample size detected (n={int(n_samples)}).")
 
-    return basis
+    # Deduplicate final phrasing deterministically.
+    return list(dict.fromkeys(basis))
 
 
 def build_report(
@@ -734,10 +799,23 @@ def build_report(
     ]
 
     warning_groups = _grouped_warnings(summary_data, qc_report, realism)
+    all_warning_items: list[dict[str, Any]] = []
+    for warning_type, items in warning_groups.items():
+        for item in items:
+            all_warning_items.append(
+                {
+                    "type": warning_type,
+                    "severity": str(item.get("level", "warning")).lower(),
+                    "code": str(item.get("code", "")),
+                    "message": str(item.get("message", "")),
+                    "sample": str(item.get("sample", "")) if item.get("sample") is not None else "",
+                    "metric": str(item.get("metric", "")) if item.get("metric") is not None else "",
+                }
+            )
+
     groups_for_assessment = _expand_groups_for_assessment(groups, qc_report)
     assessment_basis = generateAssessmentBasis(
-        qc_warnings=(qc_report or {}).get("qc_warnings", []) or [],
-        realism_flags=(realism or {}).get("realism_flags", []) or [],
+        warning_items=all_warning_items,
         n_samples=int(summary_data.get("n_samples", 0) or 0),
         groups=groups_for_assessment,
     )
@@ -755,12 +833,15 @@ def build_report(
             "Some realism flags do not map to quantitative metrics; metric-based assessment is prioritized."
         )
 
+    interpretation_qc_warnings = [
+        f"{w.get('severity', 'warning')}: {w.get('message', '')}" for w in all_warning_items if w.get("type") == "qc"
+    ]
+    interpretation_realism_flags = [
+        str(w.get("message", "")) for w in all_warning_items if w.get("type") == "realism" and str(w.get("message", "")).strip()
+    ]
     interpretation_confidence = evaluateInterpretationConfidence(
-        qc_warnings=[
-            *((qc_report or {}).get("qc_critical", []) if isinstance(qc_report, dict) else []),
-            *((qc_report or {}).get("qc_warnings", []) if isinstance(qc_report, dict) else []),
-        ],
-        realism_flags=(realism or {}).get("realism_flags", []) or [],
+        qc_warnings=interpretation_qc_warnings,
+        realism_flags=interpretation_realism_flags,
         n_samples=int(summary_data.get("n_samples", 0) or 0),
     )
     interpretation_limitation_text = generateLimitationText(
@@ -774,11 +855,9 @@ def build_report(
             "deg_up": summary_data.get("deg_up", 0),
             "deg_down": summary_data.get("deg_down", 0),
             "pca_separation": summary_data.get("pca_separation", "unknown"),
-            "qc_warnings": [
-                *((qc_report or {}).get("qc_critical", []) if isinstance(qc_report, dict) else []),
-                *((qc_report or {}).get("qc_warnings", []) if isinstance(qc_report, dict) else []),
-            ],
-            "realism_flags": (realism or {}).get("realism_flags", []) or [],
+            "qc_warnings": interpretation_qc_warnings,
+            "realism_flags": interpretation_realism_flags,
+            "warning_items": all_warning_items,
         }
     )
 

@@ -71,7 +71,17 @@ class AnalysisSummary(BaseModel):
     top_genes: List[str]
     warnings: List[str]
     data_issues: List[str]
+    warning_items: List["WarningItem"] = []
     realism_validation: Optional["RealismValidation"] = None
+
+
+class WarningItem(BaseModel):
+    type: str  # qc | realism | statistical
+    severity: str  # warning | critical
+    code: str
+    message: str
+    sample: Optional[str] = None
+    metric: Optional[str] = None
 
 
 class RealismMetrics(BaseModel):
@@ -91,6 +101,7 @@ class RealismValidation(BaseModel):
     suspicious_patterns: List[str]
     warnings: List[str]
     critical: List[str]
+    warning_items: List[WarningItem] = []
     metrics: RealismMetrics
     overall_suspicion: str  # low | moderate | high
 
@@ -144,6 +155,9 @@ class QCReport(BaseModel):
     qc_warnings: List[str]
     qc_critical: List[str]
     pca_variance: Dict[str, float]
+    qc_metrics: Dict[str, Any] = {}
+    per_sample_qc_metrics: List[Dict[str, Any]] = []
+    warning_items: List[WarningItem] = []
 
 
 # ─── LLM interpretation ──────────────────────────────────────────────────────

@@ -336,11 +336,49 @@ def validate_realism(job_dir: Path, summary_dict: dict[str, Any]) -> RealismVali
     else:
         overall = "low"
 
+    warning_items: list[dict[str, Any]] = []
+    for idx, msg in enumerate(critical):
+        code = (
+            realism_flags[idx]
+            if idx < len(realism_flags)
+            else f"realism_critical_{idx+1}"
+        )
+        warning_items.append(
+            {
+                "type": "realism",
+                "severity": "critical",
+                "code": str(code),
+                "message": str(msg),
+                "sample": None,
+                "metric": "realism",
+            }
+        )
+
+    warn_offset = len(critical)
+    for idx, msg in enumerate(warnings):
+        flag_index = warn_offset + idx
+        code = (
+            realism_flags[flag_index]
+            if flag_index < len(realism_flags)
+            else f"realism_warning_{idx+1}"
+        )
+        warning_items.append(
+            {
+                "type": "realism",
+                "severity": "warning",
+                "code": str(code),
+                "message": str(msg),
+                "sample": None,
+                "metric": "realism",
+            }
+        )
+
     return RealismValidation(
         realism_flags=realism_flags,
         suspicious_patterns=suspicious_patterns,
         warnings=warnings,
         critical=critical,
+        warning_items=warning_items,
         metrics=metrics,
         overall_suspicion=overall,
     )

@@ -54,6 +54,31 @@ build_summary <- function(dds, res_df, vsd, meta, contrast, group_col) {
     ))
   }
 
+  warning_items <- list()
+  .add_stat_warning <- function(severity, code, message, sample = NULL, metric = NULL) {
+    warning_items[[length(warning_items) + 1]] <<- list(
+      type = "statistical",
+      severity = severity,
+      code = code,
+      message = message,
+      sample = sample,
+      metric = metric
+    )
+  }
+
+  if (deg_up + deg_down == 0) {
+    .add_stat_warning("warning", "no_significant_deg", "No significant differentially expressed genes detected under current thresholds.", metric = "deg_count")
+  }
+  if (pca_sep == "none") {
+    .add_stat_warning("warning", "weak_pca_separation", "PC1 explains <15% variance and group separation is weak.", metric = "pca_separation")
+  }
+  if (length(outliers) > 0) {
+    .add_stat_warning("warning", "summary_outlier_hint", paste("Potential outlier samples:", paste(outliers, collapse = ", ")), metric = "outliers")
+  }
+  if (n_na_padj > 0.3 * nrow(res_df)) {
+    .add_stat_warning("warning", "high_na_padj_fraction", sprintf("High NA padj fraction detected (%d/%d).", n_na_padj, nrow(res_df)), metric = "padj")
+  }
+
   list(
     n_samples       = ncol(dds),
     groups          = as.list(group_levels),
@@ -64,6 +89,7 @@ build_summary <- function(dds, res_df, vsd, meta, contrast, group_col) {
     deg_down        = deg_down,
     top_genes       = as.list(top_genes),
     warnings        = as.list(warnings),
-    data_issues     = as.list(data_issues)
+    data_issues     = as.list(data_issues),
+    warning_items   = warning_items
   )
 }

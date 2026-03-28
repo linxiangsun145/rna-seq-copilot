@@ -180,21 +180,37 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
                    plots_dir, results_dir) {
   cat("[QC] Running strict QC + validation checks\n")
 
+  warning_items <- list()
   qc_warnings <- character(0)
   qc_critical <- character(0)
 
-  # 0) Base computed objects
+  .add_warning <- function(severity, code, message, sample = NULL, metric = NULL) {
+    item <- list(
+      type = "qc",
+      severity = severity,
+      code = code,
+      message = message,
+      sample = sample,
+      metric = metric
+    )
+    warning_items[[length(warning_items) + 1]] <<- item
+    if (severity == "critical") {
+      qc_critical <<- c(qc_critical, message)
+    } else {
+      qc_warnings <<- c(qc_warnings, message)
+    }
+  }
+
   vst_mat <- assay(vsd)
   sample_names <- colnames(counts_mat)
 
-  # 1) Required plots
+  # Required plots
   .qc_plot_sample_distance(vsd, meta, file.path(plots_dir, "sample_distance_heatmap.png"))
   .qc_plot_sample_correlation(vsd, meta, file.path(plots_dir, "sample_correlation_heatmap.png"))
   .qc_plot_library_size(counts_mat, meta, contrast_factor, file.path(plots_dir, "library_size.png"))
   .qc_plot_count_distribution(counts_mat, file.path(plots_dir, "count_distribution.png"))
   .qc_plot_zero_fraction(counts_mat, file.path(plots_dir, "zero_fraction.png"))
 
-  # 2) PCA + variance explained
   pca_fit <- prcomp(t(vst_mat), center = TRUE, scale. = FALSE)
   pca_var <- (pca_fit$sdev^2) / sum(pca_fit$sdev^2)
   pca_variance <- list(
@@ -202,104 +218,93 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     PC2 = round(.qc_safe_numeric(pca_var[2]), 4)
   )
 
-  # 3) Distances, correlations, library size, zero fraction
-  dist_mat <- as.matrix(dist(t(vst_mat), method = "euclidean"))
-  corr_mat <- cor(vst_mat, method = "pearson")
+  corr_mat <- cor(vst_mat, method = "pearson", use = "pairwise.complete.obs")
   lib_sizes <- colSums(counts_mat)
   zero_fraction <- colMeans(counts_mat == 0)
 
-  # 4) Replicates and group balance
   grp <- if (contrast_factor %in% colnames(meta)) as.character(meta[[contrast_factor]]) else rep("all", ncol(counts_mat))
   grp_tbl <- table(grp)
   replicates_per_group <- as.list(setNames(as.integer(grp_tbl), names(grp_tbl)))
 
   ratio <- if (length(grp_tbl) > 0) as.numeric(max(grp_tbl) / min(grp_tbl)) else 1
-  if (ratio < 1.5) {
-    group_status <- "balanced"
-  } else if (ratio <= 2) {
-    group_status <- "warning"
-    msg <- sprintf("Group imbalance warning: ratio=%.3f (1.5 <= ratio <= 2).", ratio)
-    out <- .qc_add_issue(msg, "warning", qc_warnings, qc_critical)
-    qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-  } else {
+  group_status <- "balanced"
+  if (ratio > 2) {
     group_status <- "critical"
-    msg <- sprintf("Group imbalance critical: ratio=%.3f (>2).", ratio)
-    out <- .qc_add_issue(msg, "critical", qc_warnings, qc_critical)
-    qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+    .add_warning("critical", "group_imbalance_critical", sprintf("Group imbalance detected (ratio %.2f > 2.00).", ratio), metric = "group_balance")
+  } else if (ratio >= 1.5) {
+    group_status <- "warning"
+    .add_warning("warning", "group_imbalance_warning", sprintf("Group imbalance detected (ratio %.2f >= 1.50).", ratio), metric = "group_balance")
   }
   group_balance <- list(status = group_status, ratio = round(ratio, 4))
 
-  # 5) Replicate count rules
-  for (g in names(grp_tbl)) {
-    n <- as.integer(grp_tbl[[g]])
-    if (n < 2) {
-      msg <- sprintf("Group '%s' has n=%d (<2): critical replicate deficiency.", g, n)
-      out <- .qc_add_issue(msg, "critical", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-    } else if (n == 2) {
-      msg <- sprintf("Group '%s' has n=2: warning for low replicate count.", g)
-      out <- .qc_add_issue(msg, "warning", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-    }
-  }
-
-  # 6) Library size rules
   global_median_lib <- median(lib_sizes)
   library_size_flags <- list()
+  zero_fraction_flags <- list()
+  correlation_flags <- list()
+  batch_flags <- list()
+  outlier_samples <- character(0)
+
+  sample_warning_count <- setNames(rep(0L, length(sample_names)), sample_names)
+  sample_critical_lib <- setNames(rep(FALSE, length(sample_names)), sample_names)
+  sample_critical_corr <- setNames(rep(FALSE, length(sample_names)), sample_names)
+  within_group_corr <- setNames(rep(NA_real_, length(sample_names)), sample_names)
+
+  # Library size + zero-fraction flags
   for (s in sample_names) {
     val <- as.numeric(lib_sizes[[s]])
     if (val < 0.3 * global_median_lib) {
-      library_size_flags[[length(library_size_flags) + 1]] <- list(sample = s, level = "critical", value = val, threshold = round(0.3 * global_median_lib, 2), rule = "library_size < 30% median")
-      msg <- sprintf("Sample '%s' critical library size: %.0f < 30%% median (%.0f).", s, val, 0.3 * global_median_lib)
-      out <- .qc_add_issue(msg, "critical", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+      library_size_flags[[length(library_size_flags) + 1]] <- list(
+        sample = s, level = "critical", value = val,
+        threshold = round(0.3 * global_median_lib, 2),
+        rule = "library_size < 30% median"
+      )
+      sample_critical_lib[[s]] <- TRUE
+      .add_warning("critical", "low_library_size_critical", sprintf("Low library size detected for %s (%.0f vs median %.0f).", s, val, global_median_lib), sample = s, metric = "library_size")
     } else if (val < 0.5 * global_median_lib) {
-      library_size_flags[[length(library_size_flags) + 1]] <- list(sample = s, level = "warning", value = val, threshold = round(0.5 * global_median_lib, 2), rule = "library_size < 50% median")
-      msg <- sprintf("Sample '%s' warning library size: %.0f < 50%% median (%.0f).", s, val, 0.5 * global_median_lib)
-      out <- .qc_add_issue(msg, "warning", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+      library_size_flags[[length(library_size_flags) + 1]] <- list(
+        sample = s, level = "warning", value = val,
+        threshold = round(0.5 * global_median_lib, 2),
+        rule = "library_size < 50% median"
+      )
+      sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+      .add_warning("warning", "low_library_size_warning", sprintf("Low library size detected for %s (%.0f vs median %.0f).", s, val, global_median_lib), sample = s, metric = "library_size")
     }
-  }
 
-  # 7) Zero-fraction rules
-  zero_fraction_flags <- list()
-  for (s in sample_names) {
     z <- as.numeric(zero_fraction[[s]])
     if (z > 0.4) {
       zero_fraction_flags[[length(zero_fraction_flags) + 1]] <- list(sample = s, level = "critical", value = round(z, 4), threshold = 0.4, rule = "zero_fraction > 40%")
-      msg <- sprintf("Sample '%s' critical zero fraction: %.2f%% > 40%%.", s, 100 * z)
-      out <- .qc_add_issue(msg, "critical", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+      sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+      .add_warning("critical", "high_zero_fraction_critical", sprintf("High zero-count fraction detected for %s (%.1f%% > 40%%).", s, 100 * z), sample = s, metric = "zero_fraction")
     } else if (z > 0.2) {
       zero_fraction_flags[[length(zero_fraction_flags) + 1]] <- list(sample = s, level = "warning", value = round(z, 4), threshold = 0.2, rule = "zero_fraction > 20%")
-      msg <- sprintf("Sample '%s' warning zero fraction: %.2f%% > 20%%.", s, 100 * z)
-      out <- .qc_add_issue(msg, "warning", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+      sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+      .add_warning("warning", "high_zero_fraction_warning", sprintf("Elevated zero-count fraction detected for %s (%.1f%% > 20%%).", s, 100 * z), sample = s, metric = "zero_fraction")
     }
   }
 
-  # 8) Correlation rules + outlier rules
-  correlation_flags <- list()
-  outlier_samples <- character(0)
+  # Within-group sample correlation (exclude self, safe for small groups)
+  for (g in names(grp_tbl)) {
+    group_samples <- sample_names[grp == g]
+    if (length(group_samples) < 2) next
+    for (s in group_samples) {
+      peers <- setdiff(group_samples, s)
+      m <- mean(corr_mat[s, peers, drop = TRUE], na.rm = TRUE)
+      within_group_corr[[s]] <- as.numeric(m)
 
-  # global mean correlation (excluding self)
-  for (s in sample_names) {
-    row_vals <- corr_mat[s, setdiff(sample_names, s), drop = TRUE]
-    m <- mean(row_vals, na.rm = TRUE)
-    if (m < 0.75) {
-      correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "critical", mean_correlation = round(m, 4), threshold = 0.75, rule = "mean_sample_correlation < 0.75")
-      msg <- sprintf("Sample '%s' critical mean correlation: %.3f < 0.75.", s, m)
-      out <- .qc_add_issue(msg, "critical", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-    } else if (m < 0.85) {
-      correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "warning", mean_correlation = round(m, 4), threshold = 0.85, rule = "mean_sample_correlation < 0.85")
-      msg <- sprintf("Sample '%s' warning mean correlation: %.3f < 0.85.", s, m)
-      out <- .qc_add_issue(msg, "warning", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+      if (is.finite(m) && m < 0.75) {
+        sample_critical_corr[[s]] <- TRUE
+        correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "critical", mean_correlation = round(m, 4), threshold = 0.75, rule = "mean_within_group_correlation < 0.75")
+        .add_warning("critical", "low_within_group_correlation_critical", sprintf("Low within-group correlation detected for %s (%.3f < 0.75).", s, m), sample = s, metric = "mean_within_group_correlation")
+      } else if (is.finite(m) && m < 0.85) {
+        sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+        correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "warning", mean_correlation = round(m, 4), threshold = 0.85, rule = "mean_within_group_correlation < 0.85")
+        .add_warning("warning", "low_within_group_correlation_warning", sprintf("Low within-group correlation detected for %s (%.3f < 0.85).", s, m), sample = s, metric = "mean_within_group_correlation")
+      }
     }
   }
 
-  # outlier condition A: distance to same-group centroid > median + 3*MAD
+  # Optional outlier warning (centroid distance) for groups with n>=3
+  dist_mat <- as.matrix(dist(t(vst_mat), method = "euclidean"))
   for (g in names(grp_tbl)) {
     group_samples <- sample_names[grp == g]
     if (length(group_samples) < 3) next
@@ -312,167 +317,96 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     if (length(bad) > 0) {
       outlier_samples <- unique(c(outlier_samples, bad))
       for (s in bad) {
-        msg <- sprintf("Sample '%s' outlier by centroid distance in group '%s': %.4f > %.4f (median + 3*MAD).", s, g, sample_to_centroid[[s]], thr)
-        out <- .qc_add_issue(msg, "warning", qc_warnings, qc_critical)
-        qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+        sample_warning_count[[s]] <- sample_warning_count[[s]] + 1L
+        .add_warning("warning", "distance_outlier_warning", sprintf("Distance outlier detected for %s in group %s (%.3f > %.3f).", s, g, sample_to_centroid[[s]], thr), sample = s, metric = "sample_distance")
       }
     }
   }
 
-  # outlier condition B: within-group mean correlation < 0.85, critical if < 0.75
-  for (g in names(grp_tbl)) {
-    group_samples <- sample_names[grp == g]
-    if (length(group_samples) < 2) next
-    for (s in group_samples) {
-      other <- setdiff(group_samples, s)
-      m <- mean(corr_mat[s, other, drop = TRUE], na.rm = TRUE)
-      if (m < 0.75) {
-        outlier_samples <- unique(c(outlier_samples, s))
-        msg <- sprintf("Sample '%s' outlier (critical) by within-group correlation in group '%s': %.3f < 0.75.", s, g, m)
-        out <- .qc_add_issue(msg, "critical", qc_warnings, qc_critical)
-        qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-      } else if (m < 0.85) {
-        outlier_samples <- unique(c(outlier_samples, s))
-        msg <- sprintf("Sample '%s' outlier (warning) by within-group correlation in group '%s': %.3f < 0.85.", s, g, m)
-        out <- .qc_add_issue(msg, "warning", qc_warnings, qc_critical)
-        qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-      }
-    }
-  }
-
-  # 9) Batch effect rules
-  batch_flags <- list()
+  # Batch checks stay in QC type
   if ("batch" %in% colnames(meta)) {
     batch <- as.character(meta$batch)
     condition <- grp
 
     if (.qc_is_confounded(batch, condition)) {
       batch_flags[[length(batch_flags) + 1]] <- list(level = "critical", rule = "batch_condition_confounded", detail = "Batch and condition are one-to-one confounded")
-      out <- .qc_add_issue("Critical batch effect: batch is confounded with condition.", "critical", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+      .add_warning("critical", "batch_condition_confounded", "Batch is confounded with condition.", metric = "batch")
     } else {
       pc1 <- pca_fit$x[, 1]
       r2_batch <- .qc_compute_anova_r2(pc1, batch)
       r2_cond <- .qc_compute_anova_r2(pc1, condition)
       if (is.finite(r2_batch) && is.finite(r2_cond) && (r2_batch - r2_cond) >= 0.1 && r2_batch >= 0.3) {
         batch_flags[[length(batch_flags) + 1]] <- list(level = "warning", rule = "batch_dominates_pc1", detail = sprintf("PC1 R2 batch=%.3f, condition=%.3f", r2_batch, r2_cond))
-        out <- .qc_add_issue(sprintf("Batch effect warning: batch explains more PC1 variance than condition (R2 %.3f vs %.3f).", r2_batch, r2_cond), "warning", qc_warnings, qc_critical)
-        qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+        .add_warning("warning", "batch_dominates_pc1", sprintf("Batch effect may dominate PC1 (R2 %.3f vs %.3f).", r2_batch, r2_cond), metric = "batch")
       }
     }
   }
 
-  # 10) Realism / anti-fake checks
-  realism_flags <- list()
-  sig <- res_df[!is.na(res_df$padj) & res_df$padj < 0.05, , drop = FALSE]
-  deg_count <- nrow(sig)
-
-  canonical <- c("TP53", "MYC", "EGFR", "VEGFA", "IL6", "CXCL8", "GAPDH", "ACTB")
-  housekeeping <- c("GAPDH", "ACTB", "RPL13A")
-
-  top_n <- min(20, nrow(res_df))
-  top_genes <- toupper(res_df$gene_id[seq_len(top_n)])
-  canonical_hits <- intersect(top_genes, canonical)
-
-  if (length(canonical_hits) >= 5 || (top_n > 0 && length(canonical_hits) / top_n >= 0.5)) {
-    realism_flags[[length(realism_flags) + 1]] <- list(level = "critical", rule = "canonical_overrepresented_top_genes", genes = as.list(canonical_hits))
-    out <- .qc_add_issue(sprintf("Critical realism flag: canonical genes dominate top DEGs (%s).", paste(canonical_hits, collapse = ", ")), "critical", qc_warnings, qc_critical)
-    qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-  } else if (length(canonical_hits) >= 3) {
-    realism_flags[[length(realism_flags) + 1]] <- list(level = "warning", rule = "canonical_genes_enriched_top_genes", genes = as.list(canonical_hits))
-    out <- .qc_add_issue(sprintf("Warning realism flag: canonical genes enriched in top DEGs (%s).", paste(canonical_hits, collapse = ", ")), "warning", qc_warnings, qc_critical)
-    qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-  }
-
-  sig_upper <- toupper(sig$gene_id)
-  hk_hits <- intersect(sig_upper, housekeeping)
-  if (length(hk_hits) > 0) {
-    hk_critical <- sig[toupper(sig$gene_id) %in% hk_hits & !is.na(sig$log2FoldChange) & !is.na(sig$padj) & abs(sig$log2FoldChange) >= 2 & sig$padj < 0.01, , drop = FALSE]
-    if (nrow(hk_critical) > 0) {
-      realism_flags[[length(realism_flags) + 1]] <- list(level = "critical", rule = "housekeeping_strong_deg", genes = as.list(unique(toupper(hk_critical$gene_id))))
-      out <- .qc_add_issue(sprintf("Critical realism flag: strong housekeeping DEGs detected (%s).", paste(unique(toupper(hk_critical$gene_id)), collapse = ", ")), "critical", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-    } else {
-      realism_flags[[length(realism_flags) + 1]] <- list(level = "warning", rule = "housekeeping_in_deg", genes = as.list(hk_hits))
-      out <- .qc_add_issue(sprintf("Warning realism flag: housekeeping genes present in DEGs (%s).", paste(hk_hits, collapse = ", ")), "warning", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
+  # Low-quality sample definition:
+  # critical library size OR critical correlation OR multiple warnings
+  low_quality_samples <- character(0)
+  per_sample_qc_metrics <- list()
+  for (s in sample_names) {
+    qc_flags <- character(0)
+    if (isTRUE(sample_critical_lib[[s]])) {
+      qc_flags <- c(qc_flags, "low_library_size_critical")
     }
-  }
-
-  if (deg_count < 10) {
-    realism_flags[[length(realism_flags) + 1]] <- list(level = "warning", rule = "deg_count_too_low", value = deg_count)
-    out <- .qc_add_issue(sprintf("DEG sanity warning: significant DEG count is very low (%d < 10).", deg_count), "warning", qc_warnings, qc_critical)
-    qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-  }
-  if (deg_count > 5000) {
-    realism_flags[[length(realism_flags) + 1]] <- list(level = "warning", rule = "deg_count_too_high", value = deg_count)
-    out <- .qc_add_issue(sprintf("DEG sanity warning: significant DEG count is very high (%d > 5000).", deg_count), "warning", qc_warnings, qc_critical)
-    qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-  }
-
-  pvals <- res_df$pvalue[!is.na(res_df$pvalue)]
-  if (length(pvals) >= 200) {
-    pvals_clipped <- pvals[pvals >= 0 & pvals <= 1]
-    if (length(pvals_clipped) >= 200) {
-      ks <- suppressWarnings(ks.test(pvals_clipped, "punif", 0, 1))
-      p_mean <- mean(pvals_clipped)
-      if (is.finite(ks$p.value) && ks$p.value > 0.2 && p_mean >= 0.45 && p_mean <= 0.55) {
-        realism_flags[[length(realism_flags) + 1]] <- list(level = "warning", rule = "pvalue_distribution_too_uniform", ks_pvalue = round(ks$p.value, 6), mean_pvalue = round(p_mean, 4))
-        out <- .qc_add_issue("P-value distribution warning: near-uniform distribution detected.", "warning", qc_warnings, qc_critical)
-        qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-      }
-
-      frac_tiny <- mean(pvals_clipped < 1e-10)
-      if (frac_tiny > 0.2) {
-        realism_flags[[length(realism_flags) + 1]] <- list(level = "warning", rule = "too_many_extremely_small_pvalues", fraction = round(frac_tiny, 4))
-        out <- .qc_add_issue(sprintf("P-value distribution warning: %.2f%% p-values < 1e-10.", 100 * frac_tiny), "warning", qc_warnings, qc_critical)
-        qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-      }
+    if (isTRUE(sample_critical_corr[[s]])) {
+      qc_flags <- c(qc_flags, "low_within_group_correlation_critical")
     }
+    if (sample_warning_count[[s]] >= 2) {
+      qc_flags <- c(qc_flags, "multiple_qc_warnings")
+    }
+
+    if (length(qc_flags) > 0) {
+      low_quality_samples <- c(low_quality_samples, s)
+    }
+
+    per_sample_qc_metrics[[length(per_sample_qc_metrics) + 1]] <- list(
+      sample = s,
+      library_size = as.numeric(lib_sizes[[s]]),
+      zero_fraction = round(as.numeric(zero_fraction[[s]]), 4),
+      mean_within_group_correlation = ifelse(is.finite(within_group_corr[[s]]), round(within_group_corr[[s]], 4), NA_real_),
+      qc_flags = as.list(unique(qc_flags))
+    )
   }
 
-  log_mat <- log2(counts_mat + 1)
-  med_by_sample <- apply(log_mat, 2, median, na.rm = TRUE)
-  med_z <- as.numeric(scale(med_by_sample))
-  iqr_by_sample <- apply(log_mat, 2, IQR, na.rm = TRUE)
-  iqr_med <- median(iqr_by_sample, na.rm = TRUE)
+  qc_metrics <- list(
+    library_size = list(
+      min = as.numeric(min(lib_sizes)),
+      median = as.numeric(median(lib_sizes)),
+      min_median_ratio = as.numeric(min(lib_sizes) / median(lib_sizes))
+    ),
+    correlation = list(
+      mean_within_group = as.numeric(mean(unlist(within_group_corr), na.rm = TRUE))
+    ),
+    zero_fraction = list(
+      mean = as.numeric(mean(zero_fraction, na.rm = TRUE))
+    )
+  )
 
-  for (i in seq_along(sample_names)) {
-    s <- sample_names[i]
-    if (is.finite(med_z[i]) && abs(med_z[i]) > 3) {
-      realism_flags[[length(realism_flags) + 1]] <- list(level = "warning", rule = "global_distribution_shift", sample = s, z_median = round(med_z[i], 4))
-      out <- .qc_add_issue(sprintf("Expression consistency warning: sample '%s' median expression shifted (z=%.2f).", s, med_z[i]), "warning", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-    }
-    if (is.finite(iqr_by_sample[i]) && iqr_by_sample[i] < 0.5 * iqr_med) {
-      realism_flags[[length(realism_flags) + 1]] <- list(level = "critical", rule = "compressed_dynamic_range", sample = s, iqr = round(iqr_by_sample[i], 4), threshold = round(0.5 * iqr_med, 4))
-      out <- .qc_add_issue(sprintf("Expression consistency critical: sample '%s' compressed dynamic range (IQR %.3f < %.3f).", s, iqr_by_sample[i], 0.5 * iqr_med), "critical", qc_warnings, qc_critical)
-      qc_warnings <- out$qc_warnings; qc_critical <- out$qc_critical
-    }
+  # Deduplicate warning items by (type,severity,code,sample,metric)
+  if (length(warning_items) > 0) {
+    keys <- vapply(warning_items, function(x) paste(x$type, x$severity, x$code, x$sample, x$metric, sep = "|"), character(1))
+    warning_items <- warning_items[!duplicated(keys)]
   }
 
-  # 11) Aggregate sample-level poor quality labels
-  flagged_samples <- unique(c(
-    outlier_samples,
-    vapply(library_size_flags, function(x) x$sample, character(1), USE.NAMES = FALSE),
-    vapply(zero_fraction_flags, function(x) x$sample, character(1), USE.NAMES = FALSE),
-    vapply(correlation_flags, function(x) x$sample, character(1), USE.NAMES = FALSE)
-  ))
-
-  # 12) Assemble strict JSON
   qc_report <- list(
     outliers = as.list(unique(outlier_samples)),
-    low_quality_samples = as.list(unique(flagged_samples)),
+    low_quality_samples = as.list(unique(low_quality_samples)),
     group_balance = group_balance,
     replicates_per_group = replicates_per_group,
     library_size_flags = library_size_flags,
     zero_fraction_flags = zero_fraction_flags,
     correlation_flags = correlation_flags,
     batch_flags = batch_flags,
-    realism_flags = realism_flags,
+    realism_flags = list(),
     qc_warnings = as.list(unique(qc_warnings)),
     qc_critical = as.list(unique(qc_critical)),
-    pca_variance = pca_variance
+    pca_variance = pca_variance,
+    qc_metrics = qc_metrics,
+    per_sample_qc_metrics = per_sample_qc_metrics,
+    warning_items = warning_items
   )
 
   qc_json_path <- file.path(results_dir, "qc_report.json")

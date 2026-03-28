@@ -34,6 +34,39 @@ def _job_dir(job_id: str) -> Path:
     return p
 
 
+def _sanitize_warning_items(payload: dict) -> dict:
+    """Normalize legacy warning_items payloads to match schema expectations."""
+    items = payload.get("warning_items")
+    if not isinstance(items, list):
+        return payload
+
+    normalized: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sample = item.get("sample")
+        if sample is not None and not isinstance(sample, str):
+            sample = None
+
+        metric = item.get("metric")
+        if metric is not None and not isinstance(metric, str):
+            metric = str(metric)
+
+        normalized.append(
+            {
+                "type": str(item.get("type", "statistical")),
+                "severity": str(item.get("severity", "warning")),
+                "code": str(item.get("code", "legacy_warning")),
+                "message": str(item.get("message", "")),
+                "sample": sample,
+                "metric": metric,
+            }
+        )
+
+    payload["warning_items"] = normalized
+    return payload
+
+
 @router.get("/results/{job_id}", response_model=ResultsPayload)
 def get_results(job_id: str):
     row = get_job(job_id)
@@ -54,7 +87,13 @@ def get_results(job_id: str):
     qc_report: QCReport | None = None
     qc_path = job_dir / "results" / "qc_report.json"
     if qc_path.exists():
-        qc_report = QCReport(**json.loads(qc_path.read_text(encoding="utf-8")))
+        try:
+            raw_qc = json.loads(qc_path.read_text(encoding="utf-8"))
+            raw_qc = _sanitize_warning_items(raw_qc) if isinstance(raw_qc, dict) else raw_qc
+            qc_report = QCReport(**raw_qc)
+        except Exception as exc:
+            logger.warning("Failed to parse qc_report for %s: %s", job_id, exc)
+            qc_report = None
 
     # Build plot presence map
     plot_dir = job_dir / "plots"
