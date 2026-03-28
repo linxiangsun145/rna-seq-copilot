@@ -118,6 +118,21 @@
       border-color: #f8da84;
       color: #9a6a00;
     }
+    .tag-direction-up {
+      background: #fff1f2;
+      border-color: #fda4af;
+      color: #9f1239;
+    }
+    .tag-direction-down {
+      background: #eff6ff;
+      border-color: #93c5fd;
+      color: #1d4ed8;
+    }
+    .tag-direction-neutral {
+      background: #f3f4f6;
+      border-color: #d1d5db;
+      color: #4b5563;
+    }
     .badge {
       display: inline-block;
       border-radius: 999px;
@@ -382,35 +397,41 @@
 
     <div class="section">
       <h2>6. Top Genes (Top 20)</h2>
-      {% if top_genes_table and top_genes_table|length > 0 %}
+      {% if top_genes_display and top_genes_display|length > 0 %}
       <table>
         <thead>
           <tr>
-            <th>#</th>
             <th>Gene</th>
-            <th>log2FC</th>
-            <th>padj</th>
+            <th>log2FoldChange</th>
+            <th>adjusted p-value</th>
+            <th>Direction</th>
             <th>Tags</th>
           </tr>
         </thead>
         <tbody>
-          {% for row in top_genes_table %}
+          {% for row in top_genes_display %}
           <tr>
-            <td>{{ loop.index }}</td>
             <td class="mono">{{ row.gene }}</td>
-            <td>{% if row.log2FoldChange is not none %}{{ '%.4f'|format(row.log2FoldChange) }}{% else %}NA{% endif %}</td>
-            <td>{% if row.padj is not none %}{{ '%.4g'|format(row.padj) }}{% else %}NA{% endif %}</td>
+            <td>{{ row.log2fc }}</td>
+            <td>{{ row.padj }}</td>
             <td>
-              {% if row.is_canonical %}<span class="tag tag-canonical">canonical</span>{% endif %}
-              {% if row.is_housekeeping %}<span class="tag tag-housekeeping">housekeeping</span>{% endif %}
-              {% if not row.is_canonical and not row.is_housekeeping %}<span class="muted">-</span>{% endif %}
+              <span class="tag {% if row.direction == 'Up' %}tag-direction-up{% elif row.direction == 'Down' %}tag-direction-down{% else %}tag-direction-neutral{% endif %}">{{ row.direction }}</span>
+            </td>
+            <td>
+              {% if row.tags and row.tags|length > 0 %}
+                {% for tag in row.tags %}
+                  {% if tag == 'canonical' %}<span class="tag tag-canonical">canonical</span>{% elif tag == 'housekeeping' %}<span class="tag tag-housekeeping">housekeeping</span>{% else %}<span class="tag">{{ tag }}</span>{% endif %}
+                {% endfor %}
+              {% else %}
+                <span class="muted">None</span>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
       {% else %}
-      <div class="box box-ok">No issues detected.</div>
+      <div class="box box-ok">No significant genes detected.</div>
       {% endif %}
     </div>
 

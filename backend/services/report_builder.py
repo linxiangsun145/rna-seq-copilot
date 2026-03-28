@@ -58,12 +58,14 @@ def _load_top_genes_table(job_dir: Path, n: int = 20) -> list[dict[str, Any]]:
                 gene = str(row.get("gene_id", "")).strip()
                 gene_upper = gene.upper()
                 l2fc = _to_float(row.get("log2FoldChange"))
+                pvalue = _to_float(row.get("pvalue"))
                 padj = _to_float(row.get("padj"))
 
                 rows.append(
                     {
                         "gene": gene,
                         "log2FoldChange": l2fc,
+                        "pvalue": pvalue,
                         "padj": padj,
                         "is_canonical": gene_upper in CANONICAL_GENES,
                         "is_housekeeping": gene_upper in HOUSEKEEPING_GENES,
@@ -327,6 +329,64 @@ def computeRealismMetrics(top_genes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def formatTopGenes(top_genes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort and normalize top gene rows for publication-ready table rendering."""
+    normalized: list[dict[str, Any]] = []
+
+    for row in top_genes or []:
+        if not isinstance(row, dict):
+            continue
+        gene = str(row.get("gene", "")).strip()
+        if not gene:
+            continue
+
+        log2fc = _to_metric_float(row.get("log2FoldChange"))
+        padj = _to_metric_float(row.get("padj"))
+        pvalue = _to_metric_float(row.get("pvalue"))
+
+        if log2fc is None:
+            direction = "Neutral"
+        elif log2fc > 0:
+            direction = "Up"
+        elif log2fc < 0:
+            direction = "Down"
+        else:
+            direction = "Neutral"
+
+        tags: list[str] = []
+        raw_tags = row.get("tags")
+        if isinstance(raw_tags, list):
+            tags.extend([str(t).strip().lower() for t in raw_tags if str(t).strip()])
+        elif isinstance(raw_tags, str):
+            tags.extend([t.strip().lower() for t in raw_tags.replace(";", ",").split(",") if t.strip()])
+
+        if _has_tag(row, "canonical") and "canonical" not in tags:
+            tags.append("canonical")
+        if _has_tag(row, "housekeeping") and "housekeeping" not in tags:
+            tags.append("housekeeping")
+
+        normalized.append(
+            {
+                "gene": gene,
+                "log2fc_raw": log2fc,
+                "padj_raw": padj,
+                "pvalue_raw": pvalue,
+                "log2fc": f"{log2fc:.3f}" if log2fc is not None else "NA",
+                "padj": f"{padj:.2e}" if padj is not None else (f"{pvalue:.2e}" if pvalue is not None else "NA"),
+                "direction": direction,
+                "tags": tags,
+            }
+        )
+
+    normalized.sort(
+        key=lambda x: (
+            x["padj_raw"] is None and x["pvalue_raw"] is None,
+            x["padj_raw"] if x["padj_raw"] is not None else (x["pvalue_raw"] if x["pvalue_raw"] is not None else float("inf")),
+        )
+    )
+    return normalized
+
+
 def evaluateRealism(metrics: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     has_critical = False
@@ -535,6 +595,7 @@ def build_report(
 
     realism = summary_data.get("realism_validation") or {}
     top_genes_table = _load_top_genes_table(job_dir, n=20)
+    top_genes_display = formatTopGenes(top_genes_table)
 
     analysis_methods = {
         "design_formula": formula or "not provided",
@@ -618,6 +679,7 @@ def build_report(
         qc=qc_report,
         realism=realism,
         top_genes_table=top_genes_table,
+        top_genes_display=top_genes_display,
         warning_groups=warning_groups,
         assessment_basis=assessment_basis,
         qc_metrics_summary=qc_metrics_summary,
