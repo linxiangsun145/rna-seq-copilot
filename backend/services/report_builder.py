@@ -199,6 +199,143 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     return " ".join(sentences)
 
 
+def _normalize_placeholder_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in {"none", "null", "nan", "na", "{}", "[]", "()"}:
+        return ""
+    if lowered in {"<none>", "<null>"}:
+        return ""
+    return text
+
+
+def _normalize_sample_name(value: Any) -> str:
+    sample = _normalize_placeholder_text(value)
+    if not sample:
+        return ""
+    sample = re.sub(r"[{}\[\]()]", "", sample).strip()
+    lowered = sample.lower()
+    if not sample or lowered in {"none", "null", "nan", "na"}:
+        return ""
+    return sample
+
+
+def _cleanup_assessment_text(text: str) -> str:
+    cleaned = _normalize_placeholder_text(text)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"([.!?;,])\1+", r"\1", cleaned)
+    cleaned = re.sub(r"\bdetected\s+detected\b", "detected", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bfor\s*\{\s*\}\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bfor\s+(none|null|nan)\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    return cleaned.strip(" .")
+
+
+def _strip_sample_phrase(message: str, sample: str) -> str:
+    if not message:
+        return ""
+    cleaned = message
+    if sample:
+        escaped = re.escape(sample)
+        cleaned = re.sub(rf"\bfor\s+{escaped}\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"\b{escaped}\s+detected\b", "detected", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    return cleaned.strip(" .")
+
+
+def _extract_parenthetical_evidence(text: str) -> str:
+    if not text:
+        return ""
+    matches = re.findall(r"\(([^()]*)\)", text)
+    if not matches:
+        return ""
+    return _cleanup_assessment_text(matches[-1])
+
+
+def _is_sentence_like(text: str) -> bool:
+    t = _cleanup_assessment_text(text)
+    if not t:
+        return False
+    return bool(re.search(r"\b(check|verify|review|investigate|possible|may|likely)\b", t, flags=re.IGNORECASE) or "." in t)
+
+
+def _extract_correlation_samples_from_text(text: str) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    if not text:
+        return found
+
+    for sample, evidence in re.findall(r"for\s+([A-Za-z0-9_.-]+)\s*\(([^()]*)\)", text, flags=re.IGNORECASE):
+        s = _normalize_sample_name(sample)
+        e = _cleanup_assessment_text(evidence)
+        if s:
+            found.append((s, e))
+
+    for sample, evidence in re.findall(r"\b([A-Za-z0-9_.-]+)\s*\(([-+]?\d*\.?\d+\s*<\s*[-+]?\d*\.?\d+)\)", text):
+        s = _normalize_sample_name(sample)
+        e = _cleanup_assessment_text(evidence)
+        if s and not any(x[0] == s and x[1] == e for x in found):
+            found.append((s, e))
+
+    for sample, left, right in re.findall(r"\b([A-Za-z0-9_.-]+)\s*[:=]\s*([-+]?\d*\.?\d+)\s*<\s*([-+]?\d*\.?\d+)", text):
+        s = _normalize_sample_name(sample)
+        e = _cleanup_assessment_text(f"{left} < {right}")
+        if s and not any(x[0] == s and x[1] == e for x in found):
+            found.append((s, e))
+
+    return found
+
+
+def expandSampleLevelWarnings(warnings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    for raw in (warnings or []):
+        if not isinstance(raw, dict):
+            continue
+
+        item = dict(raw)
+        item_type = str(item.get("type", "statistical")).lower().strip() or "statistical"
+        code = str(item.get("code", "")).strip()
+        metric = str(item.get("metric", "")).strip()
+        message = _cleanup_assessment_text(item.get("message", ""))
+        sample = _normalize_sample_name(item.get("sample", ""))
+        evidence = _cleanup_assessment_text(item.get("evidence", ""))
+
+        looks_like_corr = (
+            "correlation" in code.lower()
+            or "correlation" in message.lower()
+            or "mean_within_group_correlation" in metric.lower()
+        )
+
+        if looks_like_corr:
+            extracted = _extract_correlation_samples_from_text(f"{message}; {evidence}")
+            if len(extracted) > 1:
+                for s, e in extracted:
+                    expanded.append(
+                        {
+                            **item,
+                            "sample": s,
+                            "message": "Low within-group correlation detected",
+                            "evidence": e,
+                        }
+                    )
+                continue
+            if len(extracted) == 1 and not sample:
+                s, e = extracted[0]
+                item["sample"] = s
+                item["evidence"] = e
+
+        item["message"] = message
+        item["sample"] = sample
+        item["evidence"] = evidence
+        expanded.append(item)
+
+    return expanded
+
+
 def _grouped_warnings(
     summary: dict[str, Any],
     qc: Optional[dict[str, Any]],
@@ -268,10 +405,11 @@ def _grouped_warnings(
         grouped[t].append(
             {
                 "level": "critical" if str(item.get("severity", "warning")).lower() == "critical" else "warning",
-                "message": str(item.get("message", "")),
+                "message": _cleanup_assessment_text(item.get("message", "")),
                 "code": str(item.get("code", "")),
-                "sample": str(item.get("sample", "")) if item.get("sample") is not None else "",
+                "sample": _normalize_sample_name(item.get("sample", "")),
                 "metric": str(item.get("metric", "")) if item.get("metric") is not None else "",
+                "evidence": _cleanup_assessment_text(item.get("evidence", "")),
             }
         )
 
@@ -717,11 +855,12 @@ def _assessment_issue_from_warning(
     issue_type = str(item.get("type", "statistical")).lower() or "statistical"
     code = str(item.get("code", "")).strip() or "unknown_issue"
     severity = str(item.get("severity", "warning")).lower()
-    message = str(item.get("message", "")).strip()
-    sample = str(item.get("sample", "")).strip()
+    message = _cleanup_assessment_text(item.get("message", ""))
+    sample = _normalize_sample_name(item.get("sample", ""))
     metric = str(item.get("metric", "")).strip()
+    raw_evidence = _cleanup_assessment_text(item.get("evidence", ""))
 
-    issue_name = "Data quality issue"
+    issue_message = "Data quality issue detected"
     evidence: Optional[str] = None
 
     c = code.lower()
@@ -732,7 +871,7 @@ def _assessment_issue_from_warning(
     is_canonical = ("canonical" in m) or ("canonical" in c)
 
     if "group_imbalance" in c:
-        issue_name = "Group imbalance"
+        issue_message = "Group imbalance detected"
         ratio_match = re.search(r"ratio\s*([0-9.]+)", m)
         if len(group_counts) >= 2:
             sorted_groups = sorted(group_counts.items(), key=lambda x: (x[1], x[0]))
@@ -746,76 +885,113 @@ def _assessment_issue_from_warning(
         elif ratio_match:
             evidence = f"ratio {float(ratio_match.group(1)):.2f}"
     elif "low_library_size" in c or "library_size" in c:
-        issue_name = f"Low library size{' for ' + sample if sample else ''}"
+        issue_message = "Low library size detected"
         parsed = re.search(r"for\s+([^\s]+)\s*\(([^\)]+)\)", message)
         if parsed:
             sample_name = parsed.group(1)
-            issue_name = f"Low library size for {sample_name}"
+            sample = _normalize_sample_name(sample_name) or sample
             evidence = parsed.group(2)
-        elif message:
-            evidence = _normalize_text(message)
+        evidence = evidence or raw_evidence
+        if not evidence and message:
+            evidence = _extract_parenthetical_evidence(message)
     elif "correlation" in c:
-        issue_name = f"Low within-group correlation{' for ' + sample if sample else ''}"
-        if message:
-            evidence = _normalize_text(message)
+        if "implausible control correlation pattern" in m:
+            issue_message = "Implausible control correlation pattern detected"
+            evidence = raw_evidence or "Check matrix orientation and metadata alignment"
+        else:
+            issue_message = "Low within-group correlation detected"
+            evidence = raw_evidence
+            if not evidence and sample:
+                parsed = re.search(rf"for\s+{re.escape(sample)}\s*\(([^\)]+)\)", message, flags=re.IGNORECASE)
+                if parsed:
+                    evidence = _cleanup_assessment_text(parsed.group(1))
+            if not evidence:
+                evidence = _extract_parenthetical_evidence(message)
     elif "zero_fraction" in c or "zero" in c:
-        issue_name = f"High zero-count fraction{' for ' + sample if sample else ''}"
-        if message:
-            evidence = _normalize_text(message)
+        issue_message = "High zero-count fraction detected"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "top5" in c or "dominance" in c or "top-gene dominance" in m:
-        issue_name = "Top-ranked gene concentration"
-        if message:
-            evidence = _normalize_text(message)
+        issue_message = "Top-ranked gene concentration detected"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
         if not evidence:
             evidence = "dominance among leading genes"
     elif is_housekeeping and not is_canonical:
-        issue_name = "Housekeeping-gene enrichment"
+        issue_message = "Housekeeping-gene enrichment detected"
         hk_match = re.search(r"(\d+\s+housekeeping\s+genes?\s+in\s+top\s+20)", message, flags=re.IGNORECASE)
         if hk_match:
             evidence = f"{hk_match.group(1)} DEGs"
-        elif message:
-            evidence = _normalize_text(message)
+        else:
+            evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif is_canonical:
-        issue_name = "Canonical-gene enrichment"
+        issue_message = "Canonical-gene enrichment detected"
         canonical_match = re.search(r"(\d+\s*/\s*20\s+canonical\s+genes)", message, flags=re.IGNORECASE)
         if canonical_match:
             evidence = f"{canonical_match.group(1)} among top-ranked DEGs"
-        elif message:
-            evidence = _normalize_text(message)
+        else:
+            evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "pvalue" in c or "p_value" in c:
-        issue_name = "P-value distribution anomaly"
-        if message:
-            evidence = _normalize_text(message)
+        issue_message = "P-value distribution anomaly detected"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif issue_type == "statistical":
-        issue_name = "Statistical consistency issue"
-        if message:
-            evidence = _normalize_text(message)
+        issue_message = "Statistical consistency issue detected"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
 
-    if not evidence and message:
-        evidence = _normalize_text(message)
+    if message and ("implausible control correlation pattern" in m):
+        issue_message = "Implausible control correlation pattern detected"
+
+    issue_message = _cleanup_assessment_text(issue_message)
+    issue_message = _strip_sample_phrase(issue_message, sample)
+    evidence = _cleanup_assessment_text(evidence or "")
+    if message and not evidence and issue_message.lower() not in message.lower():
+        evidence = _cleanup_assessment_text(message)
+
+    if evidence:
+        sample_stripped = _strip_sample_phrase(evidence, sample)
+        if sample_stripped:
+            evidence = sample_stripped
+
+    if evidence and issue_message and evidence.lower().startswith(issue_message.lower()):
+        evidence = _cleanup_assessment_text(evidence[len(issue_message):])
+
     if not evidence and ("top5" in c or "dominance" in c):
         evidence = "dominance among leading genes"
     if not evidence and metric:
-        evidence = _normalize_text(metric.replace("_", " "))
+        evidence = _cleanup_assessment_text(metric.replace("_", " "))
 
     return {
         "type": issue_type,
         "code": code,
         "severity": "critical" if severity == "critical" else "warning",
-        "message": message,
+        "message": issue_message,
         "evidence": evidence,
-        "issue": issue_name,
+        "sample": sample,
     }
 
 
 def _assessment_phrase(issue: dict[str, Any]) -> str:
-    issue_name = str(issue.get("issue", "Data quality issue")).strip() or "Data quality issue"
-    evidence = str(issue.get("evidence", "")).strip()
+    issue_type = str(issue.get("type", "statistical")).lower().strip() or "statistical"
+    sample = _normalize_sample_name(issue.get("sample", ""))
+    message = _cleanup_assessment_text(issue.get("message", "")) or "Data quality issue detected"
+    evidence = _cleanup_assessment_text(issue.get("evidence", ""))
+
+    message = _strip_sample_phrase(message, sample)
+    message = re.sub(r"\bdetected\s+for\s*$", "detected", message, flags=re.IGNORECASE).strip(" .")
+    evidence = _strip_sample_phrase(evidence, sample)
+
+    if evidence and message and evidence.lower().startswith(message.lower()):
+        evidence = _cleanup_assessment_text(evidence[len(message):])
+
+    if sample and issue_type == "qc":
+        if evidence:
+            return f"{message} for {sample} ({evidence})."
+        return f"{message} for {sample}."
+
     if evidence:
-        return f"{issue_name} detected ({evidence})."
-    if "top-ranked gene concentration" in issue_name.lower():
-        return "Top-ranked gene concentration detected (dominance among leading genes)."
-    return f"{issue_name} detected."
+        if issue_type == "qc" and _is_sentence_like(evidence):
+            return f"{message}."
+        return f"{message} ({evidence})."
+
+    return f"{message}."
 
 
 def generateAssessmentBasis(
@@ -826,33 +1002,38 @@ def generateAssessmentBasis(
     _ = n_samples  # Kept for function signature compatibility.
 
     items = [w for w in (warning_items or []) if isinstance(w, dict)]
+    items = expandSampleLevelWarnings(items)
     group_counts = Counter([str(g).strip() for g in (groups or []) if str(g).strip()])
 
     normalized_issues = [_assessment_issue_from_warning(item, group_counts) for item in items]
 
-    # Deduplicate by code while preserving code-level evidence aggregation.
-    by_code: dict[str, dict[str, Any]] = {}
+    # Deduplicate exact semantic duplicates but keep distinct sample-level bullets.
+    deduped: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
     for issue in normalized_issues:
-        code = str(issue.get("code", "")).strip() or "unknown_issue"
-        if code not in by_code:
-            by_code[code] = issue
-        else:
-            current = by_code[code]
-            current_evidence = str(current.get("evidence", "")).strip()
-            new_evidence = str(issue.get("evidence", "")).strip()
-            if new_evidence and new_evidence not in current_evidence:
-                merged = "; ".join([x for x in [current_evidence, new_evidence] if x])
-                current["evidence"] = merged
-            if str(current.get("severity", "warning")).lower() != "critical" and str(issue.get("severity", "warning")).lower() == "critical":
-                current["severity"] = "critical"
+        key = "|".join(
+            [
+                str(issue.get("severity", "warning")).lower(),
+                str(issue.get("type", "statistical")).lower(),
+                str(issue.get("code", "")),
+                _normalize_sample_name(issue.get("sample", "")),
+                _cleanup_assessment_text(issue.get("message", "")),
+                _cleanup_assessment_text(issue.get("evidence", "")),
+            ]
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(issue)
 
     severity_order = {"critical": 0, "warning": 1}
     type_order = {"qc": 0, "realism": 1, "statistical": 2}
     ordered = sorted(
-        by_code.values(),
+        deduped,
         key=lambda x: (
             severity_order.get(str(x.get("severity", "warning")).lower(), 1),
             type_order.get(str(x.get("type", "statistical")).lower(), 2),
+            _normalize_sample_name(x.get("sample", "")) or "~",
             str(x.get("code", "")),
         ),
     )
@@ -860,7 +1041,21 @@ def generateAssessmentBasis(
     if not ordered:
         return ["No major quality or realism concerns detected."]
 
-    return [_assessment_phrase(issue) for issue in ordered]
+    bullets: list[str] = []
+    bullet_seen: set[str] = set()
+    for issue in ordered:
+        bullet = _cleanup_assessment_text(_assessment_phrase(issue))
+        if bullet and not bullet.endswith("."):
+            bullet = f"{bullet}."
+        if not bullet:
+            continue
+        dedup_key = bullet.lower()
+        if dedup_key in bullet_seen:
+            continue
+        bullet_seen.add(dedup_key)
+        bullets.append(bullet)
+
+    return bullets or ["No major quality or realism concerns detected."]
 
 
 def build_report(
@@ -973,9 +1168,10 @@ def build_report(
                     "type": warning_type,
                     "severity": str(item.get("level", "warning")).lower(),
                     "code": str(item.get("code", "")),
-                    "message": str(item.get("message", "")),
-                    "sample": str(item.get("sample", "")) if item.get("sample") is not None else "",
+                    "message": _cleanup_assessment_text(item.get("message", "")),
+                    "sample": _normalize_sample_name(item.get("sample", "")),
                     "metric": str(item.get("metric", "")) if item.get("metric") is not None else "",
+                    "evidence": _cleanup_assessment_text(item.get("evidence", "")),
                 }
             )
 
