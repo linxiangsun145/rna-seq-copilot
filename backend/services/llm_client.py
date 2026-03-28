@@ -29,6 +29,10 @@ Hard constraints:
 5) If qc_critical is non-empty or overall_qc_status is high risk, downgrade confidence and state unreliability.
 6) If overall_realism is high suspicion or realism_flags is non-empty, explicitly state possible artificial or biased signal.
 7) Every conclusion must be traceable to specific input fields.
+8) You MUST explicitly reference sample size (n_samples) in the interpretation.
+9) You MUST mention QC limitations whenever confidence is not HIGH.
+10) Avoid strong causal claims (e.g., "causes", "proves", "demonstrates").
+11) Do not infer pathways unless pathway information is explicitly provided in input.
 
 Style:
 - Formal scientific English.
@@ -46,6 +50,11 @@ Return JSON with exactly these keys:
   "results_paragraph": "<Publication text: Results paragraph>",
   "figure_legend": "<Publication text: PCA/Volcano figure legend>"
 }
+
+Section requirements:
+- Keep each section concise and evidence-bound.
+- If confidence level is LOW, use extra-cautious language and short statements.
+- Limitations section must align with provided confidence reasons.
 
 Critical quality controls:
 - If qc_critical exists: use language such as "may", "suggests", "uncertain".
@@ -67,6 +76,73 @@ def _qc_status(qc_report: Optional[dict[str, Any]]) -> str:
     return "low risk"
 
 
+def evaluateInterpretationConfidence(
+    qc_warnings: list[str],
+    realism_flags: list[str],
+    n_samples: int,
+) -> dict[str, Any]:
+    warnings = [str(w).strip() for w in (qc_warnings or []) if str(w).strip()]
+    flags = [str(f).strip() for f in (realism_flags or []) if str(f).strip()]
+
+    reasons: list[str] = [f"Sample size considered in interpretation (n={int(n_samples)})."]
+    has_critical_qc = any(
+        any(token in w.lower() for token in ["critical", "high risk", "severe"]) for w in warnings
+    )
+
+    if has_critical_qc or len(flags) > 0:
+        level = "LOW"
+        if has_critical_qc:
+            reasons.append("Critical QC issue detected; interpretation reliability is reduced.")
+        if flags:
+            reasons.append("Realism flags detected; potential artificial or biased signal cannot be excluded.")
+    elif warnings or int(n_samples) < 6:
+        level = "MEDIUM"
+        if warnings:
+            reasons.append("QC warnings present without critical findings.")
+        if int(n_samples) < 6:
+            reasons.append(f"Small sample size (n={int(n_samples)}) limits statistical stability.")
+    else:
+        level = "HIGH"
+        reasons.append("No major technical limitations detected.")
+
+    return {
+        "level": level,
+        "reasons": reasons,
+    }
+
+
+def generateLimitationText(confidence: str, reasons: list[str]) -> str:
+    level = str(confidence or "").upper()
+    if level == "LOW":
+        base = "Interpretation is limited by data quality issues and should be treated with caution."
+    elif level == "MEDIUM":
+        base = "Results are generally consistent but should be interpreted with awareness of dataset limitations."
+    else:
+        base = "No major technical concerns detected; results are considered robust within dataset scope."
+
+    summary = " ".join(str(r).strip() for r in (reasons or []) if str(r).strip())
+    return f"{base} {summary}".strip()
+
+
+def _limit_sentences(text: str, max_sentences: int = 3) -> str:
+    chunks = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    chunks = [c for c in chunks if c]
+    return " ".join(chunks[:max_sentences]) if chunks else str(text or "")
+
+
+def _cautious_rewrite(text: str) -> str:
+    replacements = {
+        " proves ": " suggests ",
+        " demonstrates ": " indicates ",
+        " causes ": " may contribute to ",
+        " confirms ": " is consistent with ",
+    }
+    out = f" {str(text or '')} "
+    for src, dst in replacements.items():
+        out = out.replace(src, dst)
+    return out.strip()
+
+
 def _build_llm_input(summary: AnalysisSummary, qc_report: Optional[dict[str, Any]]) -> dict[str, Any]:
     realism = summary.realism_validation
     overall_realism = "low suspicion"
@@ -81,6 +157,20 @@ def _build_llm_input(summary: AnalysisSummary, qc_report: Optional[dict[str, Any
         qc_warnings = list(qc_report.get("qc_warnings", []) or qc_warnings)
         qc_critical = list(qc_report.get("qc_critical", []) or [])
 
+    confidence = evaluateInterpretationConfidence(
+        qc_warnings=[*qc_critical, *qc_warnings],
+        realism_flags=realism_flags,
+        n_samples=summary.n_samples,
+    )
+    limitation_text = generateLimitationText(confidence["level"], confidence["reasons"])
+
+    structured_summary = {
+        "deg_up": summary.deg_up,
+        "deg_down": summary.deg_down,
+        "pca_separation": summary.pca_separation,
+        "top_genes": summary.top_genes,
+    }
+
     return {
         "n_samples": summary.n_samples,
         "groups": summary.groups,
@@ -93,6 +183,9 @@ def _build_llm_input(summary: AnalysisSummary, qc_report: Optional[dict[str, Any
         "realism_flags": realism_flags,
         "overall_qc_status": _qc_status(qc_report),
         "overall_realism": overall_realism,
+        "interpretation_confidence": confidence,
+        "limitation_text": limitation_text,
+        "structured_summary": structured_summary,
     }
 
 
@@ -173,4 +266,19 @@ def generate_interpretation(summary: AnalysisSummary, qc_report: Optional[dict[s
         raise ValueError(f"LLM response missing keys: {missing}")
 
     payload = {k: str(parsed[k]) for k in required_keys}
+
+    confidence = llm_input.get("interpretation_confidence", {})
+    limitation_text = generateLimitationText(
+        confidence.get("level", "MEDIUM"),
+        confidence.get("reasons", []),
+    )
+
+    # Guardrail: always inject deterministic limitation context and sample size reference.
+    payload["data_quality"] = f"{limitation_text} {payload['data_quality']} Sample size: n={summary.n_samples}.".strip()
+
+    # Guardrail: for low confidence, shorten and soften interpretive language.
+    if str(confidence.get("level", "")).upper() == "LOW":
+        for key in ["pca_text", "deg_summary", "biological_insights", "next_steps"]:
+            payload[key] = _cautious_rewrite(_limit_sentences(payload[key], max_sentences=3))
+
     return LLMInterpretation(**payload)

@@ -547,14 +547,30 @@
 
     <div class="section">
       <h2>10. AI Interpretation</h2>
+      <div class="box {% if interpretation_confidence.level == 'LOW' %}box-critical{% elif interpretation_confidence.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
+        <strong>Interpretation Confidence:</strong>
+        <span class="badge {% if interpretation_confidence.level == 'LOW' %}badge-critical{% elif interpretation_confidence.level == 'MEDIUM' %}badge-warning{% else %}badge-ok{% endif %}">{{ interpretation_confidence.level }}</span>
+      </div>
+
+      <h3>Justification</h3>
+      {% if interpretation_confidence and interpretation_confidence.reasons and interpretation_confidence.reasons|length > 0 %}
+        <ul>
+          {% for reason in interpretation_confidence.reasons %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="box box-ok">No major technical limitations detected.</div>
+      {% endif %}
+
       {% if llm %}
         <div class="box"><strong>PCA interpretation:</strong><br />{{ llm.pca_text }}</div>
         <div class="box"><strong>DEG summary:</strong><br />{{ llm.deg_summary }}</div>
         <div class="box"><strong>Biological insight:</strong><br />{{ llm.biological_insights }}</div>
-        <div class="box"><strong>Limitations:</strong><br />{{ llm.data_quality }}</div>
+        <div class="box"><strong>Limitations:</strong><br />{{ interpretation_limitation_text }} {% if llm.data_quality %}{{ llm.data_quality }}{% endif %}</div>
         <div class="box"><strong>Recommendations:</strong><br />{{ llm.next_steps }}</div>
       {% else %}
-        <div class="box box-ok">No issues detected.</div>
+        <div class="box box-warning">AI interpretation is unavailable for this run. {{ interpretation_limitation_text }}</div>
       {% endif %}
     </div>
 

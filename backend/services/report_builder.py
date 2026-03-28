@@ -16,6 +16,7 @@ from typing import Any, Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from models.schemas import AnalysisSummary, LLMInterpretation
+from services.llm_client import evaluateInterpretationConfidence, generateLimitationText
 
 logger = logging.getLogger(__name__)
 
@@ -673,6 +674,19 @@ def build_report(
             "Some realism flags do not map to quantitative metrics; metric-based assessment is prioritized."
         )
 
+    interpretation_confidence = evaluateInterpretationConfidence(
+        qc_warnings=[
+            *((qc_report or {}).get("qc_critical", []) if isinstance(qc_report, dict) else []),
+            *((qc_report or {}).get("qc_warnings", []) if isinstance(qc_report, dict) else []),
+        ],
+        realism_flags=(realism or {}).get("realism_flags", []) or [],
+        n_samples=int(summary_data.get("n_samples", 0) or 0),
+    )
+    interpretation_limitation_text = generateLimitationText(
+        interpretation_confidence.get("level", "MEDIUM"),
+        interpretation_confidence.get("reasons", []),
+    )
+
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         summary=summary_data,
@@ -686,6 +700,8 @@ def build_report(
         realism_metrics=realism_metrics,
         realism_assessment=realism_assessment,
         realism_flag_map=realism_flag_map,
+        interpretation_confidence=interpretation_confidence,
+        interpretation_limitation_text=interpretation_limitation_text,
         analysis_methods=analysis_methods,
         methods_paragraph=methods_paragraph,
         results_paragraph=results_paragraph,
