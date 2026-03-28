@@ -431,12 +431,49 @@
 
     <div class="section">
       <h2>8. Data Realism / Validation</h2>
-      <div class="cards">
-        <div class="card"><div class="card-label">Canonical genes in top20</div><div class="card-value">{{ realism.metrics.canonical_genes_in_top20 if realism and realism.metrics else 0 }}</div></div>
-        <div class="card"><div class="card-label">Housekeeping genes in top20</div><div class="card-value">{{ realism.metrics.housekeeping_genes_in_top20 if realism and realism.metrics else 0 }}</div></div>
-        <div class="card"><div class="card-label">Total DEG</div><div class="card-value">{{ realism.metrics.total_deg if realism and realism.metrics else 0 }}</div></div>
-        <div class="card"><div class="card-label">fraction p&lt;1e-6 / p&lt;1e-3 / p&gt;0.9</div><div class="card-value" style="font-size: 13px;">{% if realism and realism.metrics %}{{ '%.3f'|format(realism.metrics.fraction_p_lt_1e6) }} / {{ '%.3f'|format(realism.metrics.fraction_p_lt_1e3) }} / {{ '%.3f'|format(realism.metrics.fraction_p_gt_0_9) }}{% else %}0 / 0 / 0{% endif %}</div></div>
+      {% if realism_metrics and realism_metrics.total_deg > 0 %}
+      <h3>Realism Metrics</h3>
+      <div class="box">
+        <div><strong>Total DEGs:</strong> {{ realism_metrics.total_deg }}</div>
+        <div><strong>Canonical genes:</strong> {{ realism_metrics.canonical_count }} / {{ realism_metrics.total_deg }} ({{ '%.1f'|format(100 * realism_metrics.canonical_fraction) }}%)</div>
+        <div><strong>Housekeeping genes:</strong> {% if realism_metrics.housekeeping_genes and realism_metrics.housekeeping_genes|length > 0 %}{{ realism_metrics.housekeeping_genes | join(', ') }}{% else %}None{% endif %}</div>
+        <div><strong>Extreme p-values:</strong> {{ realism_metrics.extreme_pvalue_count }} / {{ realism_metrics.total_deg }} ({{ '%.1f'|format(100 * realism_metrics.extreme_pvalue_fraction) }}%)</div>
       </div>
+
+      <h3>Realism Assessment</h3>
+      <div class="box {% if realism_assessment.level == 'HIGH' %}box-critical{% elif realism_assessment.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
+        <strong>Realism Assessment:</strong>
+        <span class="badge {% if realism_assessment.level == 'HIGH' %}badge-critical{% elif realism_assessment.level == 'MEDIUM' %}badge-warning{% else %}badge-ok{% endif %}">{{ realism_assessment.level }}</span>
+      </div>
+
+      {% if realism_assessment.reasons and realism_assessment.reasons|length > 0 %}
+        {% for reason in realism_assessment.reasons %}
+          <div class="box {% if realism_assessment.level == 'HIGH' %}box-critical{% elif realism_assessment.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">{{ reason }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No strong evidence of data realism issues detected.</div>
+      {% endif %}
+
+      {% if realism_flag_map and realism_flag_map.mapped and realism_flag_map.mapped|length > 0 %}
+      <h3>Flag-to-Metric Mapping</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Realism Flag</th>
+            <th>Mapped Metric</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in realism_flag_map.mapped %}
+          <tr>
+            <td>{{ item.flag }}</td>
+            <td>{{ item.metric_name }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+      {% endif %}
 
       <h3>Realism Critical</h3>
       {% if realism and realism.critical and realism.critical|length > 0 %}

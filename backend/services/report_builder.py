@@ -268,6 +268,143 @@ def computeQCMetrics(
     return rows
 
 
+def _has_tag(row: dict[str, Any], tag_name: str) -> bool:
+    tag = str(tag_name).strip().lower()
+    tags_raw = row.get("tags")
+    if isinstance(tags_raw, list):
+        if tag in {str(x).strip().lower() for x in tags_raw}:
+            return True
+    elif isinstance(tags_raw, str):
+        tokens = [t.strip().lower() for t in tags_raw.replace(";", ",").split(",") if t.strip()]
+        if tag in set(tokens):
+            return True
+
+    if tag == "canonical" and bool(row.get("is_canonical")):
+        return True
+    if tag == "housekeeping" and bool(row.get("is_housekeeping")):
+        return True
+    return False
+
+
+def computeRealismMetrics(top_genes: list[dict[str, Any]]) -> dict[str, Any]:
+    total_deg = len(top_genes or [])
+    if total_deg == 0:
+        return {
+            "total_deg": 0,
+            "canonical_count": 0,
+            "canonical_fraction": 0.0,
+            "housekeeping_genes": [],
+            "extreme_pvalue_fraction": 0.0,
+            "extreme_pvalue_count": 0,
+        }
+
+    canonical_count = 0
+    housekeeping: list[str] = []
+    extreme_p_count = 0
+
+    for row in top_genes:
+        if not isinstance(row, dict):
+            continue
+        if _has_tag(row, "canonical"):
+            canonical_count += 1
+        if _has_tag(row, "housekeeping"):
+            gene_name = str(row.get("gene", "")).strip()
+            if gene_name:
+                housekeeping.append(gene_name)
+
+        padj = _to_metric_float(row.get("padj"))
+        if padj is not None and padj < 1e-6:
+            extreme_p_count += 1
+
+    housekeeping_unique = sorted(set(housekeeping))
+    return {
+        "total_deg": total_deg,
+        "canonical_count": canonical_count,
+        "canonical_fraction": canonical_count / total_deg if total_deg > 0 else 0.0,
+        "housekeeping_genes": housekeeping_unique,
+        "extreme_pvalue_fraction": extreme_p_count / total_deg if total_deg > 0 else 0.0,
+        "extreme_pvalue_count": extreme_p_count,
+    }
+
+
+def evaluateRealism(metrics: dict[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    has_critical = False
+
+    canonical_fraction = float(metrics.get("canonical_fraction", 0.0) or 0.0)
+    if canonical_fraction > 0.5:
+        has_critical = True
+        reasons.append(
+            f"Canonical fraction is high ({canonical_fraction:.1%}) and exceeds the critical threshold (>50%)."
+        )
+    elif canonical_fraction > 0.3:
+        reasons.append(
+            f"Canonical fraction is elevated ({canonical_fraction:.1%}) and exceeds the warning threshold (>30%)."
+        )
+
+    housekeeping_genes = metrics.get("housekeeping_genes") or []
+    if len(housekeeping_genes) > 0:
+        reasons.append(
+            "Housekeeping genes detected in top DEGs: " + ", ".join(housekeeping_genes)
+        )
+
+    extreme_p_fraction = float(metrics.get("extreme_pvalue_fraction", 0.0) or 0.0)
+    if extreme_p_fraction > 0.4:
+        reasons.append(
+            f"Extreme adjusted p-value fraction is elevated ({extreme_p_fraction:.1%}) and exceeds the warning threshold (>40%)."
+        )
+
+    if has_critical:
+        level = "HIGH"
+    elif reasons:
+        level = "MEDIUM"
+    else:
+        level = "LOW"
+
+    return {
+        "level": level,
+        "reasons": reasons,
+    }
+
+
+def _map_realism_flags_to_metrics(realism_flags: list[str]) -> dict[str, Any]:
+    mappings: list[dict[str, str]] = []
+    unmatched: list[str] = []
+
+    for raw_flag in realism_flags or []:
+        flag = str(raw_flag or "").strip()
+        text = flag.lower()
+        metric_key = ""
+        metric_name = ""
+
+        if "canonical" in text:
+            metric_key = "canonical_fraction"
+            metric_name = "Canonical fraction"
+        elif "housekeeping" in text:
+            metric_key = "housekeeping_genes"
+            metric_name = "Housekeeping genes"
+        elif "pvalue" in text or "p_value" in text:
+            metric_key = "extreme_pvalue_fraction"
+            metric_name = "Extreme p-value fraction"
+        elif "deg_count" in text or "deg" in text:
+            metric_key = "total_deg"
+            metric_name = "Total DEGs"
+
+        if metric_key:
+            mappings.append({
+                "flag": flag,
+                "metric_key": metric_key,
+                "metric_name": metric_name,
+            })
+        else:
+            unmatched.append(flag)
+
+    return {
+        "mapped": mappings,
+        "unmatched": unmatched,
+    }
+
+
 def _expand_groups_for_assessment(
     groups: list[str],
     qc: Optional[dict[str, Any]],
@@ -466,6 +603,14 @@ def build_report(
         pca_variance=(qc_report or {}).get("pca_variance") if isinstance(qc_report, dict) else None,
         qc_warnings=(qc_report or {}).get("qc_warnings", []) if isinstance(qc_report, dict) else [],
     )
+    realism_metrics = computeRealismMetrics(top_genes_table)
+    realism_assessment = evaluateRealism(realism_metrics)
+    realism_flag_map = _map_realism_flags_to_metrics((realism or {}).get("realism_flags", []) or [])
+    if realism_flag_map.get("unmatched"):
+        realism_assessment["reasons"] = list(realism_assessment.get("reasons", []))
+        realism_assessment["reasons"].append(
+            "Some realism flags do not map to quantitative metrics; metric-based assessment is prioritized."
+        )
 
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -476,6 +621,9 @@ def build_report(
         warning_groups=warning_groups,
         assessment_basis=assessment_basis,
         qc_metrics_summary=qc_metrics_summary,
+        realism_metrics=realism_metrics,
+        realism_assessment=realism_assessment,
+        realism_flag_map=realism_flag_map,
         analysis_methods=analysis_methods,
         methods_paragraph=methods_paragraph,
         results_paragraph=results_paragraph,
