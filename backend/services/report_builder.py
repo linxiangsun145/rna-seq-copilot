@@ -563,6 +563,71 @@ def evaluateRealism(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_realism_level(value: str) -> str:
+    v = str(value or "").strip().lower()
+    if v in {"high", "critical"}:
+        return "HIGH"
+    if v in {"moderate", "medium", "warning"}:
+        return "MEDIUM"
+    if v in {"low", "ok"}:
+        return "LOW"
+    return "LOW"
+
+
+def _build_shared_realism_result(realism: dict[str, Any]) -> dict[str, Any]:
+    """Canonical realism source of truth consumed by all report sections."""
+    metrics = (realism or {}).get("metrics") or {}
+    critical = [str(x).strip() for x in ((realism or {}).get("critical") or []) if str(x).strip()]
+    warnings = [str(x).strip() for x in ((realism or {}).get("warnings") or []) if str(x).strip()]
+
+    canonical_count = int(metrics.get("canonical_genes_in_top20", 0) or 0)
+    canonical_fraction = float(metrics.get("canonical_fraction_top20", 0.0) or 0.0)
+    housekeeping_count = int(metrics.get("housekeeping_genes_in_top20", 0) or 0)
+    extreme_pvalue_fraction = float(metrics.get("fraction_p_lt_1e6", 0.0) or 0.0)
+
+    # Keep score deterministic and bounded while reflecting severity and metric extremes.
+    score = 0.0
+    score += min(60.0, 20.0 * len(critical))
+    score += min(30.0, 5.0 * len(warnings))
+    if canonical_fraction >= 0.35:
+        score += 10.0
+    if housekeeping_count >= 2:
+        score += 10.0
+    if extreme_pvalue_fraction >= 0.30:
+        score += 10.0
+    score = max(0.0, min(100.0, score))
+
+    level_from_metrics = "HIGH" if (critical or len(warnings) >= 4) else ("MEDIUM" if len(warnings) >= 2 else "LOW")
+
+    supplied_overall = str((realism or {}).get("overall_suspicion", "")).strip()
+    if supplied_overall:
+        level_from_overall = _normalize_realism_level(supplied_overall)
+        if level_from_overall != level_from_metrics:
+            raise ValueError(
+                "[RealismConsistencyError] realism.overall_suspicion conflicts with metrics-derived level "
+                f"({level_from_overall} vs {level_from_metrics})."
+            )
+        canonical_level = level_from_overall
+    else:
+        canonical_level = level_from_metrics
+
+    reasons: list[str] = []
+    reasons.extend([f"Critical: {x}" for x in critical])
+    reasons.extend([f"Warning: {x}" for x in warnings])
+
+    return {
+        "level": canonical_level,
+        "score": round(score, 1),
+        "reasons": reasons,
+        "metrics": {
+            "canonical_count": canonical_count,
+            "canonical_fraction": canonical_fraction,
+            "housekeeping_count": housekeeping_count,
+            "extreme_pvalue_fraction": extreme_pvalue_fraction,
+        },
+    }
+
+
 def _map_realism_flags_to_metrics(realism_flags: list[str]) -> dict[str, Any]:
     mappings: list[dict[str, str]] = []
     unmatched: list[str] = []
@@ -838,12 +903,14 @@ def build_report(
         f"{analysis_methods['multiple_testing_correction']}. Reporting thresholds for DEG summaries were {analysis_methods['deg_threshold']}."
     )
 
+    shared_realism_result = _build_shared_realism_result(realism)
+
     results_paragraph = (
         f"The analysis included {summary_data.get('n_samples', 0)} samples across groups: {', '.join(groups) if groups else 'not provided'}. "
         f"Differential testing identified {summary_data.get('deg_up', 0)} upregulated and {summary_data.get('deg_down', 0)} downregulated genes. "
         f"PCA separation was classified as '{summary_data.get('pca_separation', 'unknown')}'. "
         f"Overall data quality risk was assessed as '{_overall_data_quality(qc_report)}', and realism suspicion was "
-        f"'{realism.get('overall_suspicion', 'unknown')}'."
+        f"'{shared_realism_result.get('level', 'LOW').lower()}'."
     )
 
     figure_legends = [
@@ -903,9 +970,9 @@ def build_report(
     realism_assessment = evaluateRealism(realism_metrics)
     realism_flag_map = _map_realism_flags_to_metrics((realism or {}).get("realism_flags", []) or [])
     if realism_flag_map.get("unmatched"):
-        realism_assessment["reasons"] = list(realism_assessment.get("reasons", []))
-        realism_assessment["reasons"].append(
-            "Some realism flags do not map to quantitative metrics; metric-based assessment is prioritized."
+        shared_realism_result["reasons"] = list(shared_realism_result.get("reasons", []))
+        shared_realism_result["reasons"].append(
+            "Warning: Some realism flags do not map to quantitative metrics; canonical realism scoring is still enforced."
         )
 
     interpretation_qc_warnings = [
@@ -948,6 +1015,7 @@ def build_report(
         qc_metrics_summary=qc_metrics_summary,
         realism_metrics=realism_metrics,
         realism_assessment=realism_assessment,
+        shared_realism_result=shared_realism_result,
         realism_flag_map=realism_flag_map,
         interpretation_confidence=interpretation_confidence,
         interpretation_limitation_text=interpretation_limitation_text,
@@ -957,7 +1025,7 @@ def build_report(
         results_paragraph=results_paragraph,
         figure_legends=figure_legends,
         overall_data_quality=_overall_data_quality(qc_report),
-        overall_realism=realism.get("overall_suspicion", "unknown"),
+        overall_realism=shared_realism_result.get("level", "LOW"),
         llm=llm.model_dump() if llm else None,
         plots=plots,
         job_id=job_dir.name,

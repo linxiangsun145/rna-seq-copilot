@@ -255,7 +255,7 @@
         <div class="box {% if overall_data_quality == 'high' %}box-critical{% elif overall_data_quality == 'moderate' %}box-warning{% else %}box-ok{% endif %}">
           <strong>Data Quality Risk:</strong> {{ overall_data_quality }}
         </div>
-        <div class="box {% if overall_realism == 'high' %}box-critical{% elif overall_realism == 'moderate' %}box-warning{% else %}box-ok{% endif %}">
+        <div class="box {% if overall_realism == 'HIGH' %}box-critical{% elif overall_realism == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
           <strong>Data Realism Suspicion:</strong> {{ overall_realism }}
         </div>
       </div>
@@ -457,24 +457,24 @@
 
     <div class="section">
       <h2>8. Data Realism / Validation</h2>
-      {% if realism_metrics and realism_metrics.total_deg > 0 %}
+      {% if shared_realism_result %}
       <h3>Realism Metrics</h3>
       <div class="box">
-        <div><strong>Total DEGs:</strong> {{ realism_metrics.total_deg }}</div>
-        <div><strong>Canonical genes:</strong> {{ realism_metrics.canonical_count }} / {{ realism_metrics.total_deg }} ({{ '%.1f'|format(100 * realism_metrics.canonical_fraction) }}%)</div>
-        <div><strong>Housekeeping genes:</strong> {% if realism_metrics.housekeeping_genes and realism_metrics.housekeeping_genes|length > 0 %}{{ realism_metrics.housekeeping_genes | join(', ') }}{% else %}None{% endif %}</div>
-        <div><strong>Extreme p-values:</strong> {{ realism_metrics.extreme_pvalue_count }} / {{ realism_metrics.total_deg }} ({{ '%.1f'|format(100 * realism_metrics.extreme_pvalue_fraction) }}%)</div>
+        <div><strong>Realism score:</strong> {{ '%.1f'|format(shared_realism_result.score) }} / 100</div>
+        <div><strong>Canonical genes:</strong> {{ shared_realism_result.metrics.canonical_count }} ({{ '%.1f'|format(100 * shared_realism_result.metrics.canonical_fraction) }}%)</div>
+        <div><strong>Housekeeping genes:</strong> {{ shared_realism_result.metrics.housekeeping_count }}</div>
+        <div><strong>Extreme p-values (&lt;1e-6):</strong> {{ '%.1f'|format(100 * shared_realism_result.metrics.extreme_pvalue_fraction) }}%</div>
       </div>
 
       <h3>Realism Assessment</h3>
-      <div class="box {% if realism_assessment.level == 'HIGH' %}box-critical{% elif realism_assessment.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
+      <div class="box {% if shared_realism_result.level == 'HIGH' %}box-critical{% elif shared_realism_result.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
         <strong>Realism Assessment:</strong>
-        <span class="badge {% if realism_assessment.level == 'HIGH' %}badge-critical{% elif realism_assessment.level == 'MEDIUM' %}badge-warning{% else %}badge-ok{% endif %}">{{ realism_assessment.level }}</span>
+        <span class="badge {% if shared_realism_result.level == 'HIGH' %}badge-critical{% elif shared_realism_result.level == 'MEDIUM' %}badge-warning{% else %}badge-ok{% endif %}">{{ shared_realism_result.level }}</span>
       </div>
 
-      {% if realism_assessment.reasons and realism_assessment.reasons|length > 0 %}
-        {% for reason in realism_assessment.reasons %}
-          <div class="box {% if realism_assessment.level == 'HIGH' %}box-critical{% elif realism_assessment.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">{{ reason }}</div>
+      {% if shared_realism_result.reasons and shared_realism_result.reasons|length > 0 %}
+        {% for reason in shared_realism_result.reasons %}
+          <div class="box {% if shared_realism_result.level == 'HIGH' %}box-critical{% elif shared_realism_result.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">{{ reason }}</div>
         {% endfor %}
       {% else %}
         <div class="box box-ok">No strong evidence of data realism issues detected.</div>
