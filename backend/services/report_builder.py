@@ -1795,6 +1795,7 @@ def build_report(
 
     executive_summary = str(validated_text.get("executive_summary", executive_summary))
     assessment_basis = [str(x) for x in (validated_text.get("assessment_basis", assessment_basis) or []) if str(x).strip()]
+    assessment_basis_grouped = validated_text.get("assessment_basis_grouped", {}) if isinstance(validated_text.get("assessment_basis_grouped", {}), dict) else {}
 
     validated_ai = validated_text.get("ai_interpretation", {}) if isinstance(validated_text.get("ai_interpretation", {}), dict) else {}
     interpretation_limitation_text = str(validated_ai.get("limitations", interpretation_limitation_text) or interpretation_limitation_text)
@@ -1815,6 +1816,7 @@ def build_report(
         top_genes_display=top_genes_display,
         warning_groups=warning_groups,
         assessment_basis=assessment_basis,
+        assessment_basis_grouped=assessment_basis_grouped,
         qc_metrics_summary=qc_metrics_summary,
         realism_metrics=realism_metrics,
         realism_assessment=realism_assessment,

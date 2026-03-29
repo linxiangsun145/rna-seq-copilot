@@ -261,7 +261,19 @@
       </div>
       <h3>Assessment Basis</h3>
       <div class="box">
-        {% if assessment_basis and assessment_basis|length > 0 %}
+        {% if assessment_basis_grouped and assessment_basis_grouped|length > 0 %}
+          {% set section_order = ['QC - Group-level', 'QC - Design', 'QC - Diagnostic', 'Realism'] %}
+          {% for section in section_order %}
+            {% if assessment_basis_grouped.get(section) and assessment_basis_grouped.get(section)|length > 0 %}
+              <h4>{{ section }}</h4>
+              <ul>
+                {% for item in assessment_basis_grouped.get(section) %}
+                  <li>{{ item }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          {% endfor %}
+        {% elif assessment_basis and assessment_basis|length > 0 %}
           <ul>
             {% for item in assessment_basis %}
               <li>{{ item }}</li>

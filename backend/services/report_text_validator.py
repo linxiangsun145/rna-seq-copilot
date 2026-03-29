@@ -1,13 +1,11 @@
-"""Post-generation validator and rewriter for scientific report text.
+"""Post-generation validator and final publication-style text upgrade layer.
 
-This module runs after text generation and before HTML rendering.
-It enforces deterministic reporting rules for executive summary,
-assessment basis bullets, and AI interpretation blocks.
+This module runs after deterministic report text generation and before HTML rendering.
+It upgrades phrasing style without changing analytical numbers.
 """
 from __future__ import annotations
 
 import re
-from collections import Counter
 from typing import Any
 
 
@@ -24,6 +22,13 @@ FORBIDDEN_VAGUE_PATTERNS = [
 SUPPRESSION_PATTERNS = [
     r"sample-level warnings suppressed",
     r"suppressed because group-level inconsistency is primary",
+]
+
+ASSESSMENT_GROUP_ORDER = [
+    "QC - Group-level",
+    "QC - Design",
+    "QC - Diagnostic",
+    "Realism",
 ]
 
 
@@ -58,6 +63,7 @@ def _is_qc_statement(text: str) -> bool:
             "correlation",
             "library",
             "group imbalance",
+            "group-size",
             "zero",
             "outlier",
             "sample",
@@ -67,7 +73,193 @@ def _is_qc_statement(text: str) -> bool:
 
 def _is_realism_statement(text: str) -> bool:
     t = str(text or "").lower()
-    return any(k in t for k in ["realism", "canonical", "housekeeping", "p-value", "pvalue", "top5", "top-gene"])
+    return any(k in t for k in ["realism", "canonical", "housekeeping", "p-value", "pvalue", "top5", "top-gene", "fraction"])
+
+
+def _format_symbol(op: str) -> str:
+    return op.replace(">=", "≥").replace("<=", "≤")
+
+
+def _replace_metric_label(metric: str, text: str) -> str:
+    m = _clean_text(metric).lower()
+    t = _clean_text(text).lower()
+
+    mapping = {
+        "fraction": "canonical gene fraction",
+        "ratio": "group size ratio",
+        "top5 contribution": "top 5 gene contribution",
+        "top-5 contribution": "top 5 gene contribution",
+        "group-size ratio": "group size ratio",
+        "library-size ratio": "library size ratio",
+        "canonical fraction": "canonical gene fraction",
+        "housekeeping genes": "housekeeping genes detected",
+        "mean correlation": "mean correlation",
+        "zero fraction": "zero-count fraction",
+        "extreme p-value fraction": "extreme p-value fraction",
+    }
+
+    if m in mapping:
+        return mapping[m]
+
+    # Deterministic fallback for ambiguous labels.
+    if m == "fraction":
+        return "extreme p-value fraction" if "p-value" in t or "pvalue" in t else "canonical gene fraction"
+    if m == "ratio":
+        return "group size ratio"
+
+    return metric
+
+
+def upgrade_metric_name(text: str) -> str:
+    """Replace generic metric labels with self-explanatory domain labels."""
+    t = _clean_text(text)
+    if not t or "=" not in t:
+        return t
+
+    m = re.match(r"^\s*([^=]+?)\s*=\s*(.+)$", t)
+    if not m:
+        return t
+
+    raw_metric = _clean_text(m.group(1))
+    rest = m.group(2)
+    upgraded_metric = _replace_metric_label(raw_metric, t)
+    return f"{upgraded_metric} = {rest}"
+
+
+def _metric_key_from_text(text: str) -> str:
+    t = str(text or "").lower()
+    if "mean correlation" in t:
+        return "mean_correlation"
+    if "library size ratio" in t:
+        return "library_size_ratio"
+    if "group size ratio" in t:
+        return "group_size_ratio"
+    if "zero-count fraction" in t or "zero fraction" in t:
+        return "zero_fraction"
+    if "canonical gene fraction" in t or "canonical fraction" in t:
+        return "canonical_fraction"
+    if "housekeeping genes" in t:
+        return "housekeeping_genes"
+    if "top 5 gene contribution" in t or "top5 contribution" in t:
+        return "top5_contribution"
+    if "extreme p-value fraction" in t:
+        return "extreme_pvalue_fraction"
+    return ""
+
+
+def rewrite_threshold_phrasing(text: str, metric_code: str | None = None) -> str:
+    """Convert threshold wording into publication-style expectation phrasing."""
+    t = _clean_text(text)
+    if not t:
+        return t
+
+    metric_key = metric_code or _metric_key_from_text(t)
+
+    def replacement(match: re.Match[str]) -> str:
+        op = match.group(1)
+        value = match.group(2)
+
+        # Metric-aware phrasing first.
+        if metric_key in {"group_size_ratio", "housekeeping_genes", "top5_contribution"}:
+            return f"(warning threshold {_format_symbol(op)} {value})"
+        if metric_key in {"mean_correlation", "library_size_ratio"}:
+            return f"(expected ≥ {value})"
+        if metric_key in {"canonical_fraction", "zero_fraction", "extreme_pvalue_fraction"}:
+            return f"(expected ≤ {value})"
+
+        # Generic deterministic inversion fallback.
+        invert = {"<": "≥", "<=": ">", ">": "≤", ">=": "<"}
+        return f"(expected {invert.get(op, _format_symbol(op))} {value})"
+
+    t = re.sub(r"\(\s*threshold\s*(<=|>=|<|>)\s*([-+]?\d*\.?\d+)\s*\)", replacement, t, flags=re.IGNORECASE)
+    return _clean_text(t)
+
+
+def polish_scientific_phrasing(text: str) -> str:
+    """Normalize tone into publication-style scientific English."""
+    original = _clean_text(text)
+    if not original:
+        return ""
+
+    cleaned = original
+    replacements = {
+        r"\bQC issue\s*:\s*": "Data quality assessment identified ",
+        r"\bRealism issue\s*:\s*": "Realism evaluation identified ",
+        r"\bissue\s*:\s*": "identified ",
+        r"\bwarning\s*:\s*": "observed ",
+        r"\bdetected\b": "identified",
+        r"\bpossible issue\b": "measured deviation",
+        r"\btechnical warning\b": "quantified technical anomaly",
+        r"\brealism-related warning\b": "quantified realism anomaly",
+        r"\bmay indicate\b": "is consistent with",
+        r"\bsuggests\b": "is consistent with",
+    }
+    for old, new in replacements.items():
+        cleaned = re.sub(old, new, cleaned, flags=re.IGNORECASE)
+
+    cleaned = _clean_text(cleaned)
+    return cleaned
+
+
+def merge_duplicate_statements(items: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen_text: set[str] = set()
+    seen_metric: set[str] = set()
+
+    for raw in items or []:
+        t = _clean_text(raw)
+        if not t:
+            continue
+
+        key = re.sub(r"\s+", " ", t.lower()).strip(" .")
+        if key in seen_text:
+            continue
+
+        metric_match = re.match(r"^\s*([^=]+)=", t)
+        if metric_match:
+            metric_key = _clean_text(metric_match.group(1)).lower()
+            if metric_key in seen_metric:
+                continue
+            seen_metric.add(metric_key)
+
+        seen_text.add(key)
+        merged.append(t if t.endswith(".") else f"{t}.")
+
+    return merged
+
+
+def reorder_assessment_basis(items: list[str]) -> list[str]:
+    groups = group_assessment_basis(items)
+    ordered: list[str] = []
+    for section in ASSESSMENT_GROUP_ORDER:
+        ordered.extend(groups.get(section, []))
+    return ordered
+
+
+def group_assessment_basis(items: list[str]) -> dict[str, list[str]]:
+    """Deterministically group Assessment Basis items into semantic sections."""
+    grouped = {k: [] for k in ASSESSMENT_GROUP_ORDER}
+
+    for raw in items or []:
+        t = _clean_text(raw)
+        if not t:
+            continue
+        tl = t.lower()
+
+        if "mean correlation" in tl and ("group" in tl or "control" in tl or "treated" in tl):
+            grouped["QC - Group-level"].append(t)
+        elif any(k in tl for k in ["group size ratio", "library size ratio"]):
+            grouped["QC - Design"].append(t)
+        elif any(k in tl for k in ["zero-count fraction", "batch", "pca", "diagnostic", "outlier"]):
+            grouped["QC - Diagnostic"].append(t)
+        elif any(k in tl for k in ["canonical", "housekeeping", "top 5 gene contribution", "extreme p-value"]):
+            grouped["Realism"].append(t)
+        elif _is_realism_statement(t):
+            grouped["Realism"].append(t)
+        else:
+            grouped["QC - Diagnostic"].append(t)
+
+    return {k: v for k, v in grouped.items() if v}
 
 
 def _group_inconsistency_exists(analysis_json: dict[str, Any]) -> bool:
@@ -88,16 +280,16 @@ def _major_qc_issue_text(analysis_json: dict[str, Any]) -> str | None:
         val = g_obj.get("mean_correlation")
         try:
             fval = float(val)
-            return f"{str(g_name).title()} group mean correlation = {fval:.3f} (threshold < 0.75)."
         except Exception:
-            return f"{str(g_name).title()} group mean correlation = 0.000 (threshold < 0.75)."
+            fval = 0.0
+        return f"{str(g_name).lower()} group mean correlation = {fval:.3f} (threshold < 0.75)."
 
     qc_metrics = qc_report.get("qc_metrics") if isinstance(qc_report.get("qc_metrics"), dict) else {}
     lib = qc_metrics.get("library_size") if isinstance(qc_metrics.get("library_size"), dict) else {}
     ratio = lib.get("min_median_ratio")
     try:
         fr = float(ratio)
-        return f"library-size ratio = {fr:.3f} (threshold < 0.50)."
+        return f"library size ratio = {fr:.3f} (threshold < 0.50)."
     except Exception:
         pass
 
@@ -105,19 +297,25 @@ def _major_qc_issue_text(analysis_json: dict[str, Any]) -> str | None:
     zmean = zero.get("mean")
     try:
         fz = float(zmean)
-        return f"zero fraction = {fz:.3f} (threshold > 0.40)."
+        return f"zero-count fraction = {fz:.3f} (threshold > 0.40)."
     except Exception:
         return None
 
 
 def _major_realism_issue_text(analysis_json: dict[str, Any]) -> str | None:
     metrics = analysis_json.get("realism_metrics") if isinstance(analysis_json.get("realism_metrics"), dict) else {}
+
     canonical_fraction = metrics.get("canonical_fraction")
     try:
         cf = float(canonical_fraction)
-        return f"canonical fraction = {cf:.3f} (threshold > 0.30)."
+        return f"canonical gene fraction = {cf:.3f} (threshold > 0.30)."
     except Exception:
         pass
+
+    hk = metrics.get("housekeeping_genes")
+    if isinstance(hk, list):
+        hk_count = len([x for x in hk if str(x).strip()])
+        return f"housekeeping genes detected = {hk_count} (threshold >= 2)."
 
     extreme = metrics.get("extreme_pvalue_fraction")
     try:
@@ -139,7 +337,7 @@ def rewrite_qc_statement(statement: str, analysis_json: dict[str, Any]) -> str |
             high_g, high_n = sorted_groups[-1]
             if int(low_n) > 0:
                 ratio = float(high_n) / float(low_n)
-                return f"group-size ratio = {ratio:.2f} (threshold > 1.50); {low_n} {low_g} vs {high_n} {high_g}."
+                return f"group size ratio = {ratio:.2f} (threshold > 1.50); {low_n} {low_g} vs {high_n} {high_g}."
 
     if "correlation" in t or "qc" in t or "library" in t or "zero" in t:
         return _major_qc_issue_text(analysis_json)
@@ -155,74 +353,24 @@ def rewrite_realism_statement(statement: str, analysis_json: dict[str, Any]) -> 
         hk = metrics.get("housekeeping_genes")
         if isinstance(hk, list):
             count = len([x for x in hk if str(x).strip()])
-            return f"housekeeping genes = {count} (threshold >= 2)."
+            return f"housekeeping genes detected = {count} (threshold >= 2)."
         return None
 
-    if "canonical" in t or "realism" in t or "p-value" in t or "pvalue" in t or "top" in t:
+    if "canonical" in t or "realism" in t or "p-value" in t or "pvalue" in t or "top" in t or "fraction" in t:
         return _major_realism_issue_text(analysis_json)
 
     return None
 
 
-def merge_duplicate_statements(items: list[str]) -> list[str]:
-    merged: list[str] = []
-    seen_text: set[str] = set()
-    seen_metric: set[str] = set()
-
-    for raw in items or []:
-        t = _clean_text(raw)
-        if not t:
-            continue
-        key = re.sub(r"\s+", " ", t.lower()).strip(" .")
-        if key in seen_text:
-            continue
-
-        metric_match = re.match(r"^\s*([^=]+)=", t)
-        if metric_match:
-            metric_key = _clean_text(metric_match.group(1)).lower()
-            if metric_key in seen_metric:
-                continue
-            seen_metric.add(metric_key)
-
-        seen_text.add(key)
-        merged.append(t if t.endswith(".") else f"{t}.")
-
-    return merged
+def _apply_metric_threshold_upgrade(text: str) -> str:
+    t = upgrade_metric_name(text)
+    metric_key = _metric_key_from_text(t)
+    t = rewrite_threshold_phrasing(t, metric_key)
+    t = polish_scientific_phrasing(t)
+    return t
 
 
-def reorder_assessment_basis(items: list[str]) -> list[str]:
-    buckets = {
-        "group_qc": [],
-        "support_qc": [],
-        "diagnostic": [],
-        "realism": [],
-    }
-
-    for item in items or []:
-        t = _clean_text(item)
-        if not t:
-            continue
-        tl = t.lower()
-        if "mean correlation" in tl and ("group" in tl or "control" in tl or "treated" in tl):
-            buckets["group_qc"].append(t)
-        elif any(k in tl for k in ["library-size", "group-size ratio", "zero fraction", "outlier"]):
-            buckets["support_qc"].append(t)
-        elif any(k in tl for k in ["diagnostic", "pca", "batch", "system-level"]):
-            buckets["diagnostic"].append(t)
-        elif any(k in tl for k in ["canonical", "housekeeping", "p-value", "realism", "top5"]):
-            buckets["realism"].append(t)
-        else:
-            buckets["diagnostic"].append(t)
-
-    ordered: list[str] = []
-    ordered.extend(buckets["group_qc"])
-    ordered.extend(buckets["support_qc"])
-    ordered.extend(buckets["diagnostic"])
-    ordered.extend(buckets["realism"])
-    return ordered
-
-
-def validate_assessment_basis(items: list[str], analysis_json: dict[str, Any]) -> tuple[list[str], list[str]]:
+def validate_assessment_basis(items: list[str], analysis_json: dict[str, Any]) -> tuple[list[str], dict[str, list[str]], list[str]]:
     logs: list[str] = []
     out: list[str] = []
     group_inconsistent = _group_inconsistency_exists(analysis_json)
@@ -271,15 +419,21 @@ def validate_assessment_basis(items: list[str], analysis_json: dict[str, Any]) -
 
         out.append(cleaned)
 
-    deduped = merge_duplicate_statements(out)
-    if len(deduped) < len(out):
+    upgraded = [_apply_metric_threshold_upgrade(x) for x in out]
+
+    deduped = merge_duplicate_statements(upgraded)
+    if len(deduped) < len(upgraded):
         logs.append("Merged duplicated assessment statements")
 
     ordered = reorder_assessment_basis(deduped)
+    grouped = group_assessment_basis(ordered)
+    if grouped:
+        logs.append("Grouped Assessment Basis into semantic sections")
+
     if ordered != deduped:
         logs.append("Reordered Assessment Basis into QC to realism sequence")
 
-    return ordered, logs
+    return ordered, grouped, logs
 
 
 def _sample_size_groups_from_analysis(analysis_json: dict[str, Any]) -> tuple[int, list[str]]:
@@ -294,59 +448,44 @@ def _deg_from_analysis(analysis_json: dict[str, Any]) -> tuple[int, int, int]:
     return deg_up, deg_down, deg_up + deg_down
 
 
-def validate_executive_summary(text: str, analysis_json: dict[str, Any]) -> tuple[str, list[str]]:
-    logs: list[str] = []
+def rewrite_executive_summary(text: str, analysis_json: dict[str, Any]) -> str:
+    """Rewrite summary into compact publication-style scientific prose."""
     _ = text
     n_samples, groups = _sample_size_groups_from_analysis(analysis_json)
     deg_up, deg_down, total_deg = _deg_from_analysis(analysis_json)
     pca = str(analysis_json.get("pca_separation", "unknown")).strip() or "unknown"
-    groups_text = ", ".join(groups) if groups else "unspecified groups"
 
-    qc_issue = _major_qc_issue_text(analysis_json)
-    realism_issue = _major_realism_issue_text(analysis_json)
+    if len(groups) > 1:
+        group_text = " and ".join(groups)
+    elif groups:
+        group_text = groups[0]
+    else:
+        group_text = "unspecified"
 
-    if not qc_issue:
-        qc_issue = "sample size = 0 (threshold >= 6)."
-        logs.append("Fallback QC sentence used because no quantitative QC metric was available")
-    if not realism_issue:
-        realism_issue = "canonical fraction = 0.000 (threshold > 0.30)."
-        logs.append("Fallback realism sentence used because no quantitative realism metric was available")
+    qc_finding = _apply_metric_threshold_upgrade(_major_qc_issue_text(analysis_json) or "sample size = 0 (threshold >= 6).")
+    realism_finding = _apply_metric_threshold_upgrade(_major_realism_issue_text(analysis_json) or "canonical gene fraction = 0.000 (threshold > 0.30).")
 
-    caution = "Interpretation should be treated as hypothesis-generating due to QC/realism threshold breaches."
-    summary = " ".join(
-        [
-            f"The analysis included {n_samples} samples across {groups_text}, with {total_deg} DEGs ({deg_up} upregulated, {deg_down} downregulated).",
-            f"PCA separation was classified as {pca}.",
-            f"QC issue: {qc_issue}",
-            f"Realism issue: {realism_issue}",
-            caution,
-        ]
+    summary = (
+        f"The analysis included {n_samples} samples across {group_text} groups, with {total_deg} differentially expressed genes identified "
+        f"({deg_up} upregulated and {deg_down} downregulated). "
+        f"PCA separation was classified as {pca}. "
+        f"Data quality assessment identified {qc_finding.rstrip('.')}. "
+        f"Realism evaluation identified {realism_finding.rstrip('.')}. "
+        "These findings are consistent with a hypothesis-generating interpretation rather than a confirmatory conclusion."
     )
+    return _clean_text(summary)
+
+
+def validate_executive_summary(text: str, analysis_json: dict[str, Any]) -> tuple[str, list[str]]:
+    logs: list[str] = []
+    summary = rewrite_executive_summary(text, analysis_json)
 
     if any(re.search(p, str(text or ""), flags=re.IGNORECASE) for p in FORBIDDEN_VAGUE_PATTERNS):
-        logs.append("Rewrote vague Executive Summary wording into quantified form")
+        logs.append("Rewrote vague Executive Summary wording into publication-style quantified prose")
     else:
-        logs.append("Rebuilt Executive Summary to enforce compact quantified structure")
+        logs.append("Rebuilt Executive Summary into publication-style quantified prose")
 
     return summary, logs
-
-
-def _replace_forbidden_language(text: str) -> tuple[str, bool]:
-    original = _clean_text(text)
-    cleaned = original
-    replacements = {
-        r"\bmay indicate\b": "is consistent with",
-        r"\bsuggests\b": "is consistent with",
-        r"\bpossible issue\b": "measured issue",
-        r"\btechnical warning\b": "quantified technical anomaly",
-        r"\brealism-related warning\b": "quantified realism anomaly",
-        r"\bdata quality concerns were identified\b": "quantified QC anomalies were identified",
-        r"\blow correlation detected\b": "mean correlation below threshold",
-    }
-    for old, new in replacements.items():
-        cleaned = re.sub(old, new, cleaned, flags=re.IGNORECASE)
-    cleaned = _clean_text(cleaned)
-    return cleaned, cleaned != original
 
 
 def _contains_unsupported_biology_claim(text: str, analysis_json: dict[str, Any]) -> bool:
@@ -370,10 +509,7 @@ def validate_ai_interpretation(section: dict[str, str], analysis_json: dict[str,
     out = dict(section or {})
 
     for key in ["pca_interpretation", "deg_summary", "biological_insight", "limitations", "recommendations"]:
-        cleaned, changed = _replace_forbidden_language(out.get(key, ""))
-        out[key] = cleaned
-        if changed:
-            logs.append(f"Rewrote forbidden vague language in AI interpretation field: {key}")
+        out[key] = polish_scientific_phrasing(out.get(key, ""))
 
     risk_high = False
     qc_report = analysis_json.get("qc_report") if isinstance(analysis_json.get("qc_report"), dict) else {}
@@ -389,7 +525,10 @@ def validate_ai_interpretation(section: dict[str, str], analysis_json: dict[str,
 
     major_qc = _major_qc_issue_text(analysis_json)
     if major_qc:
-        out["limitations"] = f"{major_qc} Interpretation is conservative and intended for hypothesis generation."
+        out["limitations"] = (
+            f"{_apply_metric_threshold_upgrade(major_qc).rstrip('.')} "
+            "Interpretation is conservative and intended for hypothesis generation."
+        )
         logs.append("Updated AI limitations to explicitly include quantified major QC issue")
 
     if risk_high:
@@ -398,25 +537,14 @@ def validate_ai_interpretation(section: dict[str, str], analysis_json: dict[str,
             out["deg_summary"] = prefix + out["deg_summary"]
             logs.append("Applied conservative language to AI DEG summary due to elevated QC/realism risk")
 
+    for k, v in list(out.items()):
+        out[k] = _clean_text(v)
+
     return out, logs
 
 
 def validate_report_text(report_text: dict[str, Any], analysis_json: dict[str, Any]) -> dict[str, Any]:
-    """Validate and rewrite generated report text deterministically.
-
-    Input schema example:
-    {
-      "executive_summary": str,
-      "assessment_basis": [str, ...],
-      "ai_interpretation": {
-        "pca_interpretation": str,
-        "deg_summary": str,
-        "biological_insight": str,
-        "limitations": str,
-        "recommendations": str
-      }
-    }
-    """
+    """Validate and rewrite generated report text deterministically."""
     validation_log: list[str] = []
     cleaned = dict(report_text or {})
 
@@ -424,8 +552,9 @@ def validate_report_text(report_text: dict[str, Any], analysis_json: dict[str, A
     cleaned["executive_summary"] = clean_summary
     validation_log.extend(summary_log)
 
-    clean_basis, basis_log = validate_assessment_basis(cleaned.get("assessment_basis", []) or [], analysis_json)
+    clean_basis, grouped_basis, basis_log = validate_assessment_basis(cleaned.get("assessment_basis", []) or [], analysis_json)
     cleaned["assessment_basis"] = clean_basis
+    cleaned["assessment_basis_grouped"] = grouped_basis
     validation_log.extend(basis_log)
 
     ai_section = cleaned.get("ai_interpretation", {})
