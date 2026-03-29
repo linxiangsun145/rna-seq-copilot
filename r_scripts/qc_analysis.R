@@ -280,14 +280,28 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
   qc_warnings <- character(0)
   qc_critical <- character(0)
 
-  .add_warning <- function(severity, code, message, sample = NULL, metric = NULL) {
+  .add_warning <- function(
+    severity,
+    code,
+    message,
+    sample = NULL,
+    metric = NULL,
+    level = NULL,
+    group = NULL,
+    evidence = NULL,
+    metrics = NULL
+  ) {
     item <- list(
       type = "qc",
       severity = severity,
       code = code,
       message = message,
       sample = sample,
-      metric = metric
+      metric = metric,
+      level = level,
+      group = group,
+      evidence = evidence,
+      metrics = metrics
     )
     warning_items[[length(warning_items) + 1]] <<- item
     if (severity == "critical") {
@@ -363,6 +377,8 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
   correlation_flags <- list()
   batch_flags <- list()
   outlier_samples <- character(0)
+  group_qc <- list()
+  group_flag_by_sample <- setNames(rep("none", length(sample_names)), sample_names)
 
   sample_warning_level_count <- setNames(rep(0L, length(sample_names)), sample_names)
   sample_critical_lib <- setNames(rep(FALSE, length(sample_names)), sample_names)
@@ -404,10 +420,21 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     }
   }
 
-  # Within-group sample correlation (exclude self, safe for small groups)
+  # Within-group sample correlation (exclude self) + group-level consistency interpretation
+  pending_corr_flags <- list()
+  evaluable_groups <- character(0)
+  inconsistent_groups <- character(0)
+
   for (g in names(grp_tbl)) {
     group_samples <- sample_names[grp == g]
-    if (length(group_samples) < 2) {
+    n_group <- length(group_samples)
+
+    if (n_group < 2) {
+      group_qc[[g]] <- list(
+        n_samples = n_group,
+        status = "INSUFFICIENT",
+        flag = "insufficient_samples"
+      )
       for (s in group_samples) {
         peer_corr_debug[[s]] <- list()
         peer_samples_debug[[s]] <- list()
@@ -416,30 +443,212 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
       next
     }
 
+    group_corr_values <- numeric(0)
     for (s in group_samples) {
       peers <- setdiff(group_samples, s)
       peer_samples_debug[[s]] <- as.list(peers)
-      peer_vals <- as.numeric(corr_mat[s, peers, drop = TRUE])
-      names(peer_vals) <- peers
-      peer_vals <- peer_vals[is.finite(peer_vals)]
+      peer_vals_all <- as.numeric(corr_mat[s, peers, drop = TRUE])
+      names(peer_vals_all) <- peers
+      peer_vals <- peer_vals_all[is.finite(peer_vals_all)]
       peer_corr_debug[[s]] <- as.list(round(peer_vals, 4))
 
       m <- if (length(peer_vals) > 0) mean(peer_vals, na.rm = TRUE) else NA_real_
       within_group_corr[[s]] <- as.numeric(m)
 
+      if (any(is.finite(peer_vals_all))) {
+        group_corr_values <- c(group_corr_values, peer_vals_all[is.finite(peer_vals_all)])
+      }
+
       if (is.finite(m) && m < 0.75) {
-        sample_critical_corr[[s]] <- TRUE
-        correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "critical", mean_correlation = round(m, 4), threshold = 0.75, rule = "mean_within_group_correlation < 0.75")
-        .add_warning("critical", "low_within_group_correlation_critical", sprintf("Low within-group correlation detected for %s (%.3f < 0.75).", s, m), sample = s, metric = "mean_within_group_correlation")
-        sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("critical correlation: %.3f < 0.75", m))
+        pending_corr_flags[[length(pending_corr_flags) + 1]] <- list(sample = s, level = "critical", mean_correlation = round(m, 4), threshold = 0.75, rule = "mean_within_group_correlation < 0.75", group = g)
       } else if (is.finite(m) && m < 0.85) {
-        sample_warning_level_count[[s]] <- sample_warning_level_count[[s]] + 1L
-        correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "warning", mean_correlation = round(m, 4), threshold = 0.85, rule = "mean_within_group_correlation < 0.85")
-        .add_warning("warning", "low_within_group_correlation_warning", sprintf("Low within-group correlation detected for %s (%.3f < 0.85).", s, m), sample = s, metric = "mean_within_group_correlation")
-        sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("warning correlation: %.3f < 0.85", m))
-      } else if (is.finite(m)) {
-        sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("correlation OK: %.3f", m))
+        pending_corr_flags[[length(pending_corr_flags) + 1]] <- list(sample = s, level = "warning", mean_correlation = round(m, 4), threshold = 0.85, rule = "mean_within_group_correlation < 0.85", group = g)
+      }
+    }
+
+    # Group-level consistency is only evaluated for n >= 3
+    if (n_group < 3) {
+      group_qc[[g]] <- list(
+        n_samples = n_group,
+        status = "INSUFFICIENT",
+        flag = "insufficient_samples"
+      )
+      next
+    }
+
+    evaluable_groups <- c(evaluable_groups, g)
+    finite_corr <- group_corr_values[is.finite(group_corr_values)]
+    finite_sample_corr <- as.numeric(within_group_corr[group_samples])
+    finite_sample_corr <- finite_sample_corr[is.finite(finite_sample_corr)]
+
+    if (length(finite_corr) == 0 || length(finite_sample_corr) == 0) {
+      group_qc[[g]] <- list(
+        n_samples = n_group,
+        status = "ERROR",
+        flag = "group_correlation_nan_error",
+        mean_correlation = NA_real_,
+        median_correlation = NA_real_,
+        min_correlation = NA_real_,
+        sd_correlation = NA_real_,
+        low_fraction = NA_real_
+      )
+      .add_warning(
+        "critical",
+        "group_correlation_nan_error",
+        sprintf("Group-level correlation could not be evaluated for group %s due to NaN values.", g),
+        metric = "group_correlation",
+        level = "group",
+        group = g,
+        evidence = "pairwise correlations contained only NaN values"
+      )
+      next
+    }
+
+    mean_group_corr <- as.numeric(mean(finite_corr))
+    median_group_corr <- as.numeric(stats::median(finite_corr))
+    min_group_corr <- as.numeric(min(finite_corr))
+    sd_group_corr <- as.numeric(stats::sd(finite_corr))
+    low_fraction <- as.numeric(mean(finite_sample_corr < 0.75))
+
+    status <- if (mean_group_corr >= 0.90) "HIGH" else if (mean_group_corr >= 0.75) "MODERATE" else "LOW"
+    flag <- "none"
+
+    if (mean_group_corr < 0.75 && low_fraction >= 0.70) {
+      flag <- "group_inconsistency"
+      inconsistent_groups <- c(inconsistent_groups, g)
+      .add_warning(
+        "critical",
+        "group_inconsistency",
+        sprintf("%s group shows globally low internal consistency", tools::toTitleCase(g)),
+        metric = "group_correlation",
+        level = "group",
+        group = g,
+        evidence = sprintf("mean correlation = %.3f (threshold < 0.75)", mean_group_corr),
+        metrics = list(
+          mean_correlation = round(mean_group_corr, 4),
+          min_correlation = round(min_group_corr, 4),
+          median_correlation = round(median_group_corr, 4),
+          sd_correlation = round(sd_group_corr, 4),
+          n_samples = n_group,
+          low_fraction = round(low_fraction, 4)
+        )
+      )
+    } else if (mean_group_corr >= 0.85 && any(finite_sample_corr < 0.75)) {
+      flag <- "sample_outlier"
+      .add_warning(
+        "warning",
+        "sample_outlier",
+        sprintf("%s group has high overall consistency with isolated low-correlation sample(s)", tools::toTitleCase(g)),
+        metric = "group_correlation",
+        level = "group",
+        group = g,
+        evidence = sprintf("group mean = %.3f with at least one sample < 0.75", mean_group_corr),
+        metrics = list(
+          mean_correlation = round(mean_group_corr, 4),
+          min_correlation = round(min_group_corr, 4),
+          n_samples = n_group,
+          low_fraction = round(low_fraction, 4)
+        )
+      )
+    }
+
+    if (all(finite_sample_corr < 0.75)) {
+      .add_warning(
+        "critical",
+        "group_global_inconsistency",
+        sprintf("All samples in %s group exhibit weak or negative correlation", g),
+        metric = "group_correlation",
+        level = "group",
+        group = g,
+        evidence = "possible technical artifact or heterogeneous data structure"
+      )
+    }
+
+    group_qc[[g]] <- list(
+      n_samples = n_group,
+      mean_correlation = round(mean_group_corr, 4),
+      median_correlation = round(median_group_corr, 4),
+      min_correlation = round(min_group_corr, 4),
+      sd_correlation = ifelse(is.finite(sd_group_corr), round(sd_group_corr, 4), NA_real_),
+      low_fraction = round(low_fraction, 4),
+      status = status,
+      flag = flag
+    )
+
+    for (s in group_samples) {
+      group_flag_by_sample[[s]] <- flag
+    }
+  }
+
+  if (length(evaluable_groups) > 0 && length(inconsistent_groups) == length(unique(evaluable_groups))) {
+    .add_warning(
+      "critical",
+      "global_group_inconsistency",
+      "All evaluable groups show low internal consistency.",
+      metric = "group_correlation",
+      level = "group",
+      evidence = "possible global technical artifact or globally heterogeneous dataset"
+    )
+  }
+
+  # Emit sample-level correlation warnings with suppression for group-level inconsistency.
+  for (g in names(grp_tbl)) {
+    group_samples <- sample_names[grp == g]
+    group_flag <- if (g %in% names(group_qc)) as.character(group_qc[[g]]$flag) else "none"
+    group_pending <- Filter(function(x) identical(as.character(x$group), as.character(g)), pending_corr_flags)
+
+    if (group_flag == "group_inconsistency") {
+      low_candidates <- Filter(function(x) identical(as.character(x$level), "critical"), group_pending)
+      if (length(low_candidates) > 0) {
+        ex <- low_candidates[[1]]
+        sample_warning_level_count[[as.character(ex$sample)]] <- sample_warning_level_count[[as.character(ex$sample)]] + 1L
+        correlation_flags[[length(correlation_flags) + 1]] <- list(
+          sample = as.character(ex$sample),
+          level = "warning",
+          mean_correlation = as.numeric(ex$mean_correlation),
+          threshold = 0.75,
+          rule = "group_inconsistency_context_example"
+        )
+        .add_warning(
+          "warning",
+          "low_within_group_correlation_group_context_warning",
+          sprintf("Example low-correlation sample in %s group: %s (%.3f < 0.75).", g, as.character(ex$sample), as.numeric(ex$mean_correlation)),
+          sample = as.character(ex$sample),
+          metric = "mean_within_group_correlation",
+          level = "sample",
+          group = g,
+          evidence = "sample-level warnings suppressed because group-level inconsistency is primary"
+        )
+      }
+      for (s in group_samples) {
+        sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("group-level inconsistency in '%s'; per-sample critical correlation suppressed", g))
+      }
+      next
+    }
+
+    for (flag_item in group_pending) {
+      s <- as.character(flag_item$sample)
+      level <- as.character(flag_item$level)
+      m <- as.numeric(flag_item$mean_correlation)
+      thr <- as.numeric(flag_item$threshold)
+
+      if (level == "critical") {
+        sample_critical_corr[[s]] <- TRUE
+        correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "critical", mean_correlation = round(m, 4), threshold = thr, rule = "mean_within_group_correlation < 0.75")
+        .add_warning("critical", "low_within_group_correlation_critical", sprintf("Low within-group correlation detected for %s (%.3f < %.2f).", s, m, thr), sample = s, metric = "mean_within_group_correlation", level = "sample", group = g, evidence = sprintf("%.3f < %.2f", m, thr))
+        sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("critical correlation: %.3f < %.2f", m, thr))
       } else {
+        sample_warning_level_count[[s]] <- sample_warning_level_count[[s]] + 1L
+        correlation_flags[[length(correlation_flags) + 1]] <- list(sample = s, level = "warning", mean_correlation = round(m, 4), threshold = thr, rule = "mean_within_group_correlation < 0.85")
+        .add_warning("warning", "low_within_group_correlation_warning", sprintf("Low within-group correlation detected for %s (%.3f < %.2f).", s, m, thr), sample = s, metric = "mean_within_group_correlation", level = "sample", group = g, evidence = sprintf("%.3f < %.2f", m, thr))
+        sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("warning correlation: %.3f < %.2f", m, thr))
+      }
+    }
+
+    for (s in group_samples) {
+      if (is.finite(within_group_corr[[s]]) && within_group_corr[[s]] >= 0.85) {
+        sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], sprintf("correlation OK: %.3f", within_group_corr[[s]]))
+      } else if (!is.finite(within_group_corr[[s]])) {
         sample_qc_reasons[[s]] <- c(sample_qc_reasons[[s]], "correlation unavailable after finite-value filtering")
       }
     }
@@ -455,7 +664,8 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
       "warning",
       "correlation_sanity_check_warning",
       sprintf("Correlation logic may be misconfigured or dataset may be globally inconsistent (%.0f%% samples correlation-flagged).", 100 * corr_flag_ratio),
-      metric = "mean_within_group_correlation"
+      metric = "mean_within_group_correlation",
+      level = "global"
     )
     cat(sprintf("[QC][WARN] Sanity check triggered: %d/%d samples flagged by correlation\n", length(unique(corr_flagged_samples)), length(sample_names)))
   }
@@ -469,7 +679,9 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
         "warning",
         "implausible_control_correlation_warning",
         "Implausible control correlation pattern detected. Check matrix orientation and metadata alignment.",
-        metric = "mean_within_group_correlation"
+        metric = "mean_within_group_correlation",
+        level = "group",
+        group = paste(control_groups, collapse = ",")
       )
       cat(sprintf("[QC][WARN] All control replicates have negative within-group correlation: %s\n", paste(control_samples, collapse = ",")))
     }
@@ -548,6 +760,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     sample_debug <- list(
       sample = s,
       condition = condition,
+      group_qc_flag = as.character(group_flag_by_sample[[s]]),
       peer_samples = as.list(unname(unlist(peer_samples_debug[[s]]))),
       peer_correlations = peer_corr_debug[[s]],
       mean_within_group_correlation = ifelse(is.finite(within_group_corr[[s]]), round(within_group_corr[[s]], 4), NA_real_),
@@ -561,6 +774,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     per_sample_qc_metrics[[length(per_sample_qc_metrics) + 1]] <- list(
       sample = s,
       condition = condition,
+      group_qc_flag = as.character(group_flag_by_sample[[s]]),
       peer_samples = as.list(unname(unlist(peer_samples_debug[[s]]))),
       library_size = as.numeric(lib_sizes[[s]]),
       zero_fraction = round(as.numeric(zero_fraction[[s]]), 4),
@@ -592,7 +806,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
 
   # Deduplicate warning items by (type,severity,code,sample,metric)
   if (length(warning_items) > 0) {
-    keys <- vapply(warning_items, function(x) paste(x$type, x$severity, x$code, x$sample, x$metric, sep = "|"), character(1))
+    keys <- vapply(warning_items, function(x) paste(x$type, x$severity, x$code, x$sample, x$metric, x$group, x$level, sep = "|"), character(1))
     warning_items <- warning_items[!duplicated(keys)]
   }
 
@@ -610,6 +824,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     qc_critical = as.list(unique(qc_critical)),
     pca_variance = pca_variance,
     qc_metrics = qc_metrics,
+    group_qc = group_qc,
     per_sample_qc_metrics = per_sample_qc_metrics,
     warning_items = warning_items
   )

@@ -370,7 +370,7 @@ def _grouped_warnings(
         for msg in summary.get("data_issues", []) or []:
             collected_items.append({"type": "statistical", "severity": "warning", "code": "summary_data_issue_fallback", "message": str(msg)})
 
-    # Deduplicate by code + sample + metric for traceable deterministic rendering.
+    # Deduplicate by code + sample + group + metric for traceable deterministic rendering.
     seen: set[str] = set()
     unique_items: list[dict[str, Any]] = []
     for item in collected_items:
@@ -379,6 +379,7 @@ def _grouped_warnings(
             str(item.get("severity", "")),
             str(item.get("code", "")),
             str(item.get("sample", "")),
+            str(item.get("group", "")),
             str(item.get("metric", "")),
         ])
         if key in seen:
@@ -394,6 +395,7 @@ def _grouped_warnings(
             severity_order.get(str(x.get("severity", "warning")).lower(), 1),
             type_order.get(str(x.get("type", "statistical")).lower(), 2),
             str(x.get("code", "")),
+            str(x.get("group", "")),
             str(x.get("sample", "")),
         )
     )
@@ -407,6 +409,7 @@ def _grouped_warnings(
                 "level": "critical" if str(item.get("severity", "warning")).lower() == "critical" else "warning",
                 "message": _cleanup_assessment_text(item.get("message", "")),
                 "code": str(item.get("code", "")),
+                "group": _normalize_placeholder_text(item.get("group", "")),
                 "sample": _normalize_sample_name(item.get("sample", "")),
                 "metric": str(item.get("metric", "")) if item.get("metric") is not None else "",
                 "evidence": _cleanup_assessment_text(item.get("evidence", "")),
@@ -857,6 +860,8 @@ def _assessment_issue_from_warning(
     severity = str(item.get("severity", "warning")).lower()
     message = _cleanup_assessment_text(item.get("message", ""))
     sample = _normalize_sample_name(item.get("sample", ""))
+    group = _normalize_placeholder_text(item.get("group", ""))
+    group_label = group.title() if group else ""
     metric = str(item.get("metric", "")).strip()
     raw_evidence = _cleanup_assessment_text(item.get("evidence", ""))
 
@@ -884,6 +889,27 @@ def _assessment_issue_from_warning(
                 evidence = f"{low_n} {low_group} vs {high_n} {high_group}; ratio {ratio:.2f}"
         elif ratio_match:
             evidence = f"ratio {float(ratio_match.group(1)):.2f}"
+    elif "group_inconsistency" in c:
+        if group_label:
+            issue_message = f"{group_label} group shows globally low internal consistency"
+        else:
+            issue_message = "Group shows globally low internal consistency"
+        evidence = raw_evidence
+    elif "group_global_inconsistency" in c:
+        if group_label:
+            issue_message = f"All samples in {group_label} group exhibit weak or negative correlation"
+        else:
+            issue_message = "All samples in one group exhibit weak or negative correlation"
+        evidence = raw_evidence
+    elif "global_group_inconsistency" in c:
+        issue_message = "All evaluable groups show low internal consistency"
+        evidence = raw_evidence
+    elif "sample_outlier" in c:
+        if group_label:
+            issue_message = f"{group_label} group contains isolated low-correlation sample(s)"
+        else:
+            issue_message = "Group contains isolated low-correlation sample(s)"
+        evidence = raw_evidence
     elif "low_library_size" in c or "library_size" in c:
         issue_message = "Low library size detected"
         parsed = re.search(r"for\s+([^\s]+)\s*\(([^\)]+)\)", message)
@@ -964,6 +990,7 @@ def _assessment_issue_from_warning(
         "severity": "critical" if severity == "critical" else "warning",
         "message": issue_message,
         "evidence": evidence,
+        "group": group,
         "sample": sample,
     }
 
@@ -1016,6 +1043,7 @@ def generateAssessmentBasis(
                 str(issue.get("severity", "warning")).lower(),
                 str(issue.get("type", "statistical")).lower(),
                 str(issue.get("code", "")),
+                _normalize_placeholder_text(issue.get("group", "")),
                 _normalize_sample_name(issue.get("sample", "")),
                 _cleanup_assessment_text(issue.get("message", "")),
                 _cleanup_assessment_text(issue.get("evidence", "")),
@@ -1028,12 +1056,20 @@ def generateAssessmentBasis(
 
     severity_order = {"critical": 0, "warning": 1}
     type_order = {"qc": 0, "realism": 1, "statistical": 2}
+    code_priority = {
+        "group_inconsistency": 0,
+        "group_global_inconsistency": 1,
+        "global_group_inconsistency": 2,
+        "sample_outlier": 3,
+    }
     ordered = sorted(
         deduped,
         key=lambda x: (
             severity_order.get(str(x.get("severity", "warning")).lower(), 1),
             type_order.get(str(x.get("type", "statistical")).lower(), 2),
+            _normalize_placeholder_text(x.get("group", "")) or "~",
             _normalize_sample_name(x.get("sample", "")) or "~",
+            code_priority.get(str(x.get("code", "")), 50),
             str(x.get("code", "")),
         ),
     )
@@ -1169,6 +1205,7 @@ def build_report(
                     "severity": str(item.get("level", "warning")).lower(),
                     "code": str(item.get("code", "")),
                     "message": _cleanup_assessment_text(item.get("message", "")),
+                    "group": _normalize_placeholder_text(item.get("group", "")),
                     "sample": _normalize_sample_name(item.get("sample", "")),
                     "metric": str(item.get("metric", "")) if item.get("metric") is not None else "",
                     "evidence": _cleanup_assessment_text(item.get("evidence", "")),

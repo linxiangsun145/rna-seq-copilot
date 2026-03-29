@@ -80,8 +80,12 @@ class WarningItem(BaseModel):
     severity: str  # warning | critical
     code: str
     message: str
+    level: Optional[str] = None
+    group: Optional[str] = None
     sample: Optional[str] = None
     metric: Optional[str] = None
+    evidence: Optional[str] = None
+    metrics: Optional[Dict[str, Any]] = None
 
 
 class RealismMetrics(BaseModel):
@@ -156,6 +160,7 @@ class QCReport(BaseModel):
     qc_critical: List[str]
     pca_variance: Dict[str, float]
     qc_metrics: Dict[str, Any] = {}
+    group_qc: Dict[str, Any] = {}
     per_sample_qc_metrics: List[Dict[str, Any]] = []
     warning_items: List[WarningItem] = []
 
