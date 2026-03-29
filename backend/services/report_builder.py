@@ -17,6 +17,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from models.schemas import AnalysisSummary, LLMInterpretation
 from services.llm_client import evaluateInterpretationConfidence
+from services.report_text_validator import build_analysis_snapshot, validate_report_text
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     qc_report = data.get("qc_report") if isinstance(data.get("qc_report"), dict) else {}
     group_qc = (qc_report or {}).get("group_qc") if isinstance((qc_report or {}).get("group_qc"), dict) else {}
 
-    qc_sentence = "QC metrics were within configured thresholds."
+    qc_sentence = "library-size ratio = 1.000 (threshold < 0.50)"
     inconsistent_groups: list[tuple[str, dict[str, Any]]] = []
     for g, obj in group_qc.items():
         if isinstance(obj, dict) and str(obj.get("flag", "none")) == "group_inconsistency":
@@ -179,20 +180,14 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
         g_name, g_obj = inconsistent_groups[0]
         g_mean = _to_metric_float(g_obj.get("mean_correlation"))
         if g_mean is not None:
-            qc_sentence = (
-                f"{str(g_name).title()} group mean within-group correlation was measured at {g_mean:.3f}, "
-                "below the low-consistency threshold (0.75)."
-            )
+            qc_sentence = f"mean correlation = {g_mean:.3f} (threshold < 0.75)"
         else:
-            qc_sentence = f"{str(g_name).title()} group met criteria for low internal consistency."
+            qc_sentence = "mean correlation = 0.000 (threshold < 0.75)"
     else:
         lib = ((qc_report or {}).get("qc_metrics") or {}).get("library_size") if isinstance((qc_report or {}).get("qc_metrics"), dict) else {}
         ratio = _to_metric_float((lib or {}).get("min_median_ratio")) if isinstance(lib, dict) else None
         if ratio is not None:
-            qc_sentence = (
-                f"Minimum-to-median library-size ratio was {ratio:.3f} "
-                f"(threshold >= 0.50 for non-critical depth)."
-            )
+            qc_sentence = f"library-size ratio = {ratio:.3f} (threshold < 0.50)"
 
     realism_metrics = data.get("realism_metrics") if isinstance(data.get("realism_metrics"), dict) else {}
     realism_level = str(data.get("realism_level", "LOW")).upper()
@@ -201,18 +196,18 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     canonical_fraction = float(realism_metrics.get("canonical_fraction", 0.0) or 0.0)
     extreme_frac = float(realism_metrics.get("extreme_pvalue_fraction", 0.0) or 0.0)
 
-    realism_sentence = (
-        f"Realism metrics measured canonical genes at {canonical_count}/{max(total_deg_for_realism, 1)} "
-        f"({100*canonical_fraction:.1f}%) and extreme adjusted p-values at {100*extreme_frac:.1f}%; "
-        f"the realism level was {realism_level}."
-    )
+    realism_sentence = f"canonical fraction = {canonical_fraction:.3f} (threshold > 0.30)"
+    if total_deg_for_realism > 0:
+        realism_sentence = f"canonical fraction = {canonical_fraction:.3f} (threshold > 0.30)"
+    elif extreme_frac > 0:
+        realism_sentence = f"extreme p-value fraction = {extreme_frac:.3f} (threshold > 0.40)"
 
     return " ".join(
         [
             f"The analysis included {n_samples} samples across {groups_text}, with {total_deg} DEGs ({deg_up} upregulated, {deg_down} downregulated).",
             f"PCA separation was classified as {pca_separation}.",
-            qc_sentence,
-            realism_sentence,
+            f"QC issue: {qc_sentence}.",
+            f"Realism issue: {realism_sentence}; realism level = {realism_level}.",
         ]
     )
 
@@ -252,6 +247,7 @@ def _cleanup_assessment_text(text: str) -> str:
     cleaned = cleaned.replace("possible technical artifact", "technical artifact")
     cleaned = re.sub(r"\bmay\s+indicate\b", "is consistent with", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bsuggests\s+possible\b", "is consistent with", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bsuggests\b", "is consistent with", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
     return cleaned.strip(" .")
 
@@ -276,6 +272,167 @@ def _extract_parenthetical_evidence(text: str) -> str:
     if not matches:
         return ""
     return _cleanup_assessment_text(matches[-1])
+
+
+def _contains_number(text: str) -> bool:
+    return bool(re.search(r"[-+]?\d*\.?\d+", str(text or "")))
+
+
+def _contains_threshold(text: str) -> bool:
+    t = str(text or "").lower()
+    return bool(re.search(r"(threshold|<=|>=|<|>|warning|critical|low|moderate|high)", t))
+
+
+def _extract_comparator_pair(text: str) -> tuple[Optional[float], Optional[str], Optional[float]]:
+    m = re.search(r"([-+]?\d*\.?\d+)\s*(<=|>=|<|>)\s*([-+]?\d*\.?\d+)", str(text or ""))
+    if not m:
+        return None, None, None
+    return _to_metric_float(m.group(1)), m.group(2), _to_metric_float(m.group(3))
+
+
+def _extract_named_metric(text: str, key: str) -> Optional[float]:
+    m = re.search(rf"\b{re.escape(key)}\s*[:=]\s*([-+]?\d*\.?\d+)", str(text or ""), flags=re.IGNORECASE)
+    if not m:
+        return None
+    return _to_metric_float(m.group(1))
+
+
+def _extract_threshold_value(text: str) -> Optional[float]:
+    # Examples: "threshold > 0.30", "exceeding the 1.50 threshold", "threshold >= 2"
+    t = str(text or "")
+    m = re.search(r"threshold\s*(?:[:=]|<=|>=|<|>)?\s*([-+]?\d*\.?\d+)", t, flags=re.IGNORECASE)
+    if m:
+        return _to_metric_float(m.group(1))
+    m = re.search(r"([-+]?\d*\.?\d+)\s+threshold", t, flags=re.IGNORECASE)
+    if m:
+        return _to_metric_float(m.group(1))
+    return None
+
+
+def _format_threshold_value(value: Optional[float]) -> Optional[str]:
+    if value is None:
+        return None
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    if value < 0.01:
+        return f"{value:.3g}"
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _metric_name_from_code(code: str, metric: str = "") -> str:
+    c = str(code or "").lower()
+    m = str(metric or "").lower()
+    if "correlation" in c or "correlation" in m or "group_inconsistency" in c:
+        return "mean correlation"
+    if "library_size" in c:
+        return "library-size ratio"
+    if "group_imbalance" in c:
+        return "group-size ratio"
+    if "zero" in c:
+        return "zero fraction"
+    if "top5" in c or "dominance" in c:
+        return "top5 contribution"
+    if "pvalue" in c or "p_value" in c:
+        return "fraction"
+    if "canonical" in c:
+        return "canonical fraction"
+    if "housekeeping" in c:
+        return "housekeeping genes"
+    return "value"
+
+
+def _default_threshold_clause(code: str) -> str:
+    c = str(code or "").lower()
+    if "correlation" in c or "group_inconsistency" in c:
+        return "< 0.75"
+    if "library_size" in c:
+        return "< 0.50"
+    if "group_imbalance" in c:
+        return "> 1.50"
+    if "zero" in c:
+        return "> 0.40"
+    if "top5" in c or "dominance" in c:
+        return ">= 0.60"
+    if "pvalue" in c or "p_value" in c:
+        return "> 0.40"
+    if "canonical" in c:
+        return "> 0.30"
+    if "housekeeping" in c:
+        return "> 0"
+    return "as configured"
+
+
+def _build_required_metric_statement(code: str, metric: str, message: str, evidence: str) -> Optional[str]:
+    text = _cleanup_assessment_text("; ".join([x for x in [evidence, message] if x]))
+    if not text:
+        return None
+
+    metric_name = _metric_name_from_code(code, metric)
+    value: Optional[float] = None
+
+    named = _extract_named_metric(text, metric_name)
+    if named is not None:
+        value = named
+
+    if value is None:
+        left, op, right = _extract_comparator_pair(text)
+        if left is not None and op and right is not None:
+            value = left
+
+    if value is None:
+        m = re.search(r"\b=\s*([-+]?\d*\.?\d+)", text)
+        if m:
+            value = _to_metric_float(m.group(1))
+
+    if value is None:
+        return None
+
+    threshold_clause: Optional[str] = None
+    c = str(code or "").lower()
+
+    # Force canonical comparator direction for metrics with fixed rule direction.
+    if "correlation" in c or "group_inconsistency" in c:
+        threshold_clause = "< 0.75"
+    elif "library_size" in c:
+        threshold_clause = "< 0.50"
+    elif "group_imbalance" in c:
+        threshold_clause = "> 1.50"
+    elif "zero" in c:
+        threshold_clause = "> 0.40"
+    elif "top5" in c or "dominance" in c:
+        threshold_clause = ">= 0.60"
+    elif "pvalue" in c or "p_value" in c:
+        threshold_clause = "> 0.30"
+    elif "canonical" in c:
+        threshold_clause = "> 0.30"
+    elif "housekeeping" in c:
+        threshold_clause = ">= 2"
+
+    left, op, right = _extract_comparator_pair(text)
+    if threshold_clause is None and op and right is not None:
+        right_txt = _format_threshold_value(right)
+        if right_txt is not None:
+            threshold_clause = f"{op} {right_txt}"
+
+    if threshold_clause is None:
+        thr_val = _extract_threshold_value(text)
+        thr_txt = _format_threshold_value(thr_val)
+        if thr_txt is not None:
+            threshold_clause = f"> {thr_txt}"
+
+    if threshold_clause is None:
+        threshold_clause = _default_threshold_clause(code)
+
+    value_txt = _format_threshold_value(value)
+    if value_txt is None:
+        return None
+
+    return f"{metric_name} = {value_txt} (threshold {threshold_clause})"
+
+
+def _is_required_metric_statement(text: str) -> bool:
+    t = _cleanup_assessment_text(text)
+    return bool(t and _contains_number(t) and "=" in t and "threshold" in t.lower())
 
 
 def _is_sentence_like(text: str) -> bool:
@@ -335,11 +492,15 @@ def expandSampleLevelWarnings(warnings: list[dict[str, Any]]) -> list[dict[str, 
             extracted = _extract_correlation_samples_from_text(f"{message}; {evidence}")
             if len(extracted) > 1:
                 for s, e in extracted:
+                    left, op, right = _extract_comparator_pair(e)
+                    corr_message = "Within-group correlation below threshold"
+                    if left is not None and op and right is not None:
+                        corr_message = f"Within-group correlation = {left:.3f} ({op} threshold {right:.3f})"
                     expanded.append(
                         {
                             **item,
                             "sample": s,
-                            "message": "Low within-group correlation detected",
+                            "message": corr_message,
                             "evidence": e,
                         }
                     )
@@ -391,13 +552,13 @@ def _grouped_warnings(
         for msg in summary.get("data_issues", []) or []:
             collected_items.append({"type": "statistical", "severity": "warning", "code": "summary_data_issue_fallback", "message": str(msg)})
 
-    # Suppress intentionally downgraded sample-level correlation messages when a group-level
-    # inconsistency statement exists for the same group.
+    # Suppress sample-level correlation/outlier statements when a group-level inconsistency
+    # statement exists for the same group.
     inconsistent_groups: set[str] = set()
     for item in collected_items:
         code = str(item.get("code", "")).strip()
         grp = _normalize_placeholder_text(item.get("group", "")).lower()
-        if code == "group_inconsistency" and grp:
+        if code in {"group_inconsistency", "group_global_inconsistency", "global_group_inconsistency"} and grp:
             inconsistent_groups.add(grp)
 
     filtered_items: list[dict[str, Any]] = []
@@ -406,7 +567,7 @@ def _grouped_warnings(
         grp = _normalize_placeholder_text(item.get("group", "")).lower()
         if code.endswith("group_context_warning"):
             continue
-        if code in {"low_within_group_correlation_critical", "low_within_group_correlation_warning"} and grp and grp in inconsistent_groups:
+        if code in {"low_within_group_correlation_critical", "low_within_group_correlation_warning", "sample_outlier"} and grp and grp in inconsistent_groups:
             continue
         filtered_items.append(item)
     collected_items = filtered_items
@@ -818,26 +979,43 @@ def _build_realism_evidence_lines(metrics: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     if total_deg > 0:
         lines.append(
-            f"Canonical genes in ranked DEGs: {canonical_count}/{total_deg} ({100*canonical_fraction:.1f}%)."
+            f"Canonical genes in ranked DEGs: {canonical_count}/{total_deg} ({100*canonical_fraction:.1f}%) "
+            "(thresholds: >30% = WARNING, >50% = CRITICAL)."
         )
         lines.append(
-            f"Extreme adjusted p-values (<1e-6): {extreme_count}/{total_deg} ({100*extreme_fraction:.1f}%)."
+            f"Extreme adjusted p-values (<1e-6): {extreme_count}/{total_deg} ({100*extreme_fraction:.1f}%) "
+            "(threshold: >40% = WARNING)."
         )
     if housekeeping:
-        lines.append("Housekeeping genes observed in ranked DEGs: " + ", ".join(housekeeping) + ".")
+        lines.append(
+            "Housekeeping genes observed in ranked DEGs: "
+            + ", ".join(housekeeping)
+            + " (threshold: >0 genes = WARNING)."
+        )
     else:
-        lines.append("Housekeeping genes observed in ranked DEGs: 0.")
+        lines.append("Housekeeping genes observed in ranked DEGs: 0 (threshold: >0 genes = WARNING).")
     return lines
 
 
 def _build_interpretation_limitation(qc_report: Optional[dict[str, Any]], n_samples: int) -> str:
     group_qc = (qc_report or {}).get("group_qc") if isinstance((qc_report or {}).get("group_qc"), dict) else {}
-    low_groups = [str(g) for g, obj in (group_qc or {}).items() if isinstance(obj, dict) and str(obj.get("flag", "")) == "group_inconsistency"]
-    if low_groups:
-        return f"Interpretation is limited by low within-group consistency in the {', '.join(low_groups)} cohort."
+    for g_name, g_obj in sorted((group_qc or {}).items(), key=lambda x: str(x[0]).lower()):
+        if not isinstance(g_obj, dict):
+            continue
+        if str(g_obj.get("flag", "")) != "group_inconsistency":
+            continue
+        g_mean = _to_metric_float(g_obj.get("mean_correlation"))
+        if g_mean is not None:
+            return (
+                f"Interpretation limitation: mean correlation = {g_mean:.3f} "
+                f"(threshold < 0.75) in {str(g_name).title()} group."
+            )
+        return f"Interpretation limitation: mean correlation = 0.000 (threshold < 0.75) in {str(g_name).title()} group."
+
     if n_samples < 6:
-        return f"Interpretation is limited by sample size (n={n_samples})."
-    return "Interpretation is constrained to statistical patterns and QC metrics reported above."
+        return f"Interpretation limitation: sample size = {n_samples} (threshold >= 6)."
+
+    return f"Interpretation limitation: sample size = {n_samples} (threshold >= 6)."
 
 
 def _normalize_realism_level(value: str) -> str:
@@ -966,6 +1144,8 @@ def _expand_groups_for_assessment(
 def _assessment_issue_from_warning(
     item: dict[str, Any],
     group_counts: Counter[str],
+    qc_report: Optional[dict[str, Any]] = None,
+    realism_metrics: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     issue_type = str(item.get("type", "statistical")).lower() or "statistical"
     code = str(item.get("code", "")).strip() or "unknown_issue"
@@ -977,7 +1157,7 @@ def _assessment_issue_from_warning(
     metric = str(item.get("metric", "")).strip()
     raw_evidence = _cleanup_assessment_text(item.get("evidence", ""))
 
-    issue_message = "Data quality issue detected"
+    issue_message = "Issue"
     evidence: Optional[str] = None
 
     c = code.lower()
@@ -988,42 +1168,45 @@ def _assessment_issue_from_warning(
     is_canonical = ("canonical" in m) or ("canonical" in c)
 
     if "group_imbalance" in c:
-        issue_message = "Group imbalance detected"
+        issue_message = "Group balance ratio exceeded threshold"
         ratio_match = re.search(r"ratio\s*([0-9.]+)", m)
+        threshold_val = _extract_threshold_value(message) or _extract_threshold_value(raw_evidence)
+        comp_left, comp_op, comp_right = _extract_comparator_pair(message)
+        if comp_op in {">", ">="} and comp_right is not None:
+            threshold_val = comp_right
         if len(group_counts) >= 2:
             sorted_groups = sorted(group_counts.items(), key=lambda x: (x[1], x[0]))
             low_group, low_n = sorted_groups[0]
             high_group, high_n = sorted_groups[-1]
             ratio = (high_n / low_n) if low_n > 0 else float("inf")
+            thr_text = f"{threshold_val:.2f}" if threshold_val is not None else "1.50"
             if ratio_match:
-                evidence = f"{low_n} {low_group} vs {high_n} {high_group}; ratio {float(ratio_match.group(1)):.2f}"
+                evidence = (
+                    f"{low_n} {low_group} vs {high_n} {high_group}; "
+                    f"ratio = {float(ratio_match.group(1)):.2f} (threshold: >{thr_text} = WARNING)"
+                )
             else:
-                evidence = f"{low_n} {low_group} vs {high_n} {high_group}; ratio {ratio:.2f}"
+                evidence = (
+                    f"{low_n} {low_group} vs {high_n} {high_group}; "
+                    f"ratio = {ratio:.2f} (threshold: >{thr_text} = WARNING)"
+                )
         elif ratio_match:
-            evidence = f"ratio {float(ratio_match.group(1)):.2f}"
+            thr_text = f"{threshold_val:.2f}" if threshold_val is not None else "1.50"
+            evidence = f"ratio = {float(ratio_match.group(1)):.2f} (threshold: >{thr_text} = WARNING)"
     elif "group_inconsistency" in c:
-        if group_label:
-            issue_message = f"{group_label} group shows globally low internal consistency"
-        else:
-            issue_message = "Group shows globally low internal consistency"
-        evidence = raw_evidence
+        issue_message = f"{group_label} group mean within-group correlation was below threshold" if group_label else "Group mean within-group correlation was below threshold"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "group_global_inconsistency" in c:
-        if group_label:
-            issue_message = f"All samples in {group_label} group exhibit weak or negative correlation"
-        else:
-            issue_message = "All samples in one group exhibit weak or negative correlation"
-        evidence = raw_evidence
+        issue_message = f"{group_label} group consistency failure affected all evaluated samples" if group_label else "Group consistency failure affected all evaluated samples"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "global_group_inconsistency" in c:
-        issue_message = "All evaluable groups show low internal consistency"
-        evidence = raw_evidence
+        issue_message = "All evaluable groups had low within-group correlation"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "sample_outlier" in c:
-        if group_label:
-            issue_message = f"{group_label} group contains isolated low-correlation sample(s)"
-        else:
-            issue_message = "Group contains isolated low-correlation sample(s)"
-        evidence = raw_evidence
+        issue_message = f"{group_label} group had low-correlation sample outlier(s)" if group_label else "Low-correlation sample outlier(s) were observed"
+        evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "low_library_size" in c or "library_size" in c:
-        issue_message = "Low library size detected"
+        issue_message = "Library-size ratio was below threshold"
         parsed = re.search(r"for\s+([^\s]+)\s*\(([^\)]+)\)", message)
         if parsed:
             sample_name = parsed.group(1)
@@ -1034,10 +1217,23 @@ def _assessment_issue_from_warning(
             evidence = _extract_parenthetical_evidence(message)
     elif "correlation" in c:
         if "implausible control correlation pattern" in m:
-            issue_message = "Implausible control correlation pattern detected"
-            evidence = raw_evidence or "Check matrix orientation and metadata alignment"
+            issue_message = "Control-correlation pattern failed consistency check"
+            gq = (qc_report or {}).get("group_qc") if isinstance((qc_report or {}).get("group_qc"), dict) else {}
+            control_obj = None
+            for g_name, g_obj in (gq or {}).items():
+                if str(g_name).strip().lower() == "control" and isinstance(g_obj, dict):
+                    control_obj = g_obj
+                    break
+            control_mean = _to_metric_float((control_obj or {}).get("mean_correlation")) if control_obj else None
+            if control_mean is not None:
+                evidence = (
+                    f"control mean correlation = {control_mean:.3f} "
+                    "(thresholds: <0.75 = LOW, 0.75-0.90 = MODERATE, >=0.90 = HIGH)"
+                )
+            else:
+                evidence = _extract_parenthetical_evidence(message)
         else:
-            issue_message = "Low within-group correlation detected"
+            issue_message = "Within-group correlation was below threshold"
             evidence = raw_evidence
             if not evidence and sample:
                 parsed = re.search(rf"for\s+{re.escape(sample)}\s*\(([^\)]+)\)", message, flags=re.IGNORECASE)
@@ -1046,36 +1242,77 @@ def _assessment_issue_from_warning(
             if not evidence:
                 evidence = _extract_parenthetical_evidence(message)
     elif "zero_fraction" in c or "zero" in c:
-        issue_message = "High zero-count fraction detected"
+        issue_message = "Zero-count fraction exceeded threshold"
         evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "top5" in c or "dominance" in c or "top-gene dominance" in m:
-        issue_message = "Top-ranked gene concentration detected"
+        issue_message = "Top-gene concentration was elevated"
         evidence = raw_evidence or _extract_parenthetical_evidence(message)
-        if not evidence:
-            evidence = "dominance among leading genes"
+        if not evidence and realism_metrics:
+            total_deg = int((realism_metrics or {}).get("total_deg", 0) or 0)
+            if total_deg > 0:
+                canonical_count = int((realism_metrics or {}).get("canonical_count", 0) or 0)
+                evidence = (
+                    f"canonical genes = {canonical_count}/{total_deg} "
+                    "(thresholds: >30% = WARNING, >50% = CRITICAL)"
+                )
     elif is_housekeeping and not is_canonical:
-        issue_message = "Housekeeping-gene enrichment detected"
+        issue_message = "Housekeeping-gene signal exceeded threshold"
         hk_match = re.search(r"(\d+\s+housekeeping\s+genes?\s+in\s+top\s+20)", message, flags=re.IGNORECASE)
+        hk_thr = _extract_threshold_value(message) or _extract_threshold_value(raw_evidence)
         if hk_match:
-            evidence = f"{hk_match.group(1)} DEGs"
+            n_match = re.search(r"(\d+)", hk_match.group(1))
+            hk_n = int(n_match.group(1)) if n_match else 0
+            if hk_thr is not None:
+                evidence = f"housekeeping genes = {hk_n} (threshold: >={hk_thr:.0f} = WARNING)"
+            else:
+                evidence = f"housekeeping genes = {hk_n} (threshold: >0 genes = WARNING)"
         else:
             evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif is_canonical:
-        issue_message = "Canonical-gene enrichment detected"
+        issue_message = "Canonical-gene fraction exceeded threshold"
         canonical_match = re.search(r"(\d+\s*/\s*20\s+canonical\s+genes)", message, flags=re.IGNORECASE)
         if canonical_match:
-            evidence = f"{canonical_match.group(1)} among top-ranked DEGs"
+            frac_match = re.search(r"(\d+)\s*/\s*(20)", canonical_match.group(1))
+            if frac_match:
+                c_num = int(frac_match.group(1))
+                c_den = int(frac_match.group(2))
+                c_pct = 100.0 * c_num / c_den if c_den > 0 else 0.0
+                evidence = (
+                    f"canonical genes = {c_num}/{c_den} ({c_pct:.1f}%) "
+                    "(thresholds: >30% = WARNING, >50% = CRITICAL)"
+                )
+            else:
+                evidence = raw_evidence or _extract_parenthetical_evidence(message)
         else:
             evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif "pvalue" in c or "p_value" in c:
-        issue_message = "P-value distribution anomaly detected"
-        evidence = raw_evidence or _extract_parenthetical_evidence(message)
+        issue_message = "Extreme p-value fraction exceeded threshold"
+        frac = None
+        frac_m = re.search(r"([-+]?\d*\.?\d+)\s+of\s+p-values", message, flags=re.IGNORECASE)
+        if frac_m:
+            frac = _to_metric_float(frac_m.group(1))
+        thr = _extract_threshold_value(message) or _extract_threshold_value(raw_evidence)
+        if frac is not None:
+            thr_txt = f"{thr:.2f}" if thr is not None else "0.40"
+            evidence = f"fraction = {frac:.3f} (threshold: >{thr_txt} = WARNING)"
+        else:
+            evidence = raw_evidence or _extract_parenthetical_evidence(message)
     elif issue_type == "statistical":
-        issue_message = "Statistical consistency issue detected"
+        issue_message = "Diagnostic statistical anomaly observed"
         evidence = raw_evidence or _extract_parenthetical_evidence(message)
 
+    if "top5" in c or "dominance" in c or "top-gene dominance" in m:
+        dominance = None
+        dom_m = re.search(r"account\s+for\s+([-+]?\d*\.?\d+)", message, flags=re.IGNORECASE)
+        if dom_m:
+            dominance = _to_metric_float(dom_m.group(1))
+        thr = _extract_threshold_value(message) or _extract_threshold_value(raw_evidence)
+        if dominance is not None:
+            thr_txt = f"{thr:.2f}" if thr is not None else "0.60"
+            evidence = f"top5 contribution = {dominance:.3f} (threshold: >={thr_txt} = WARNING)"
+
     if message and ("implausible control correlation pattern" in m):
-        issue_message = "Implausible control correlation pattern detected"
+        issue_message = "Control-correlation pattern failed consistency check"
 
     issue_message = _cleanup_assessment_text(issue_message)
     issue_message = _strip_sample_phrase(issue_message, sample)
@@ -1091,10 +1328,26 @@ def _assessment_issue_from_warning(
     if evidence and issue_message and evidence.lower().startswith(issue_message.lower()):
         evidence = _cleanup_assessment_text(evidence[len(issue_message):])
 
+    if code in {"group_inconsistency", "group_global_inconsistency", "global_group_inconsistency"} and evidence:
+        metric_clause = re.search(r"(mean\s+correlation\s*=.+)$", evidence, flags=re.IGNORECASE)
+        if metric_clause:
+            evidence = _cleanup_assessment_text(metric_clause.group(1))
+
     if not evidence and ("top5" in c or "dominance" in c):
-        evidence = "dominance among leading genes"
+        evidence = "dominance index unavailable (threshold: model-defined cutoff)"
     if not evidence and metric:
         evidence = _cleanup_assessment_text(metric.replace("_", " "))
+
+    # Enforce quantitative QC/realism wording with numeric value and threshold when applicable.
+    if issue_type in {"qc", "realism"}:
+        strict_metric = _build_required_metric_statement(code, metric, message, evidence)
+        if strict_metric:
+            evidence = strict_metric
+            issue_message = ""
+        else:
+            # Hard rule: any QC/realism statement without numeric value must be deleted.
+            evidence = ""
+            issue_message = ""
 
     category = "D_realism"
     if issue_type == "qc":
@@ -1107,7 +1360,7 @@ def _assessment_issue_from_warning(
     elif issue_type == "realism":
         category = "D_realism"
     else:
-        category = "E_statistical"
+        category = "C_diagnostic_qc"
 
     return {
         "type": issue_type,
@@ -1124,7 +1377,7 @@ def _assessment_issue_from_warning(
 def _assessment_phrase(issue: dict[str, Any]) -> str:
     issue_type = str(issue.get("type", "statistical")).lower().strip() or "statistical"
     sample = _normalize_sample_name(issue.get("sample", ""))
-    message = _cleanup_assessment_text(issue.get("message", "")) or "Data quality issue detected"
+    message = _cleanup_assessment_text(issue.get("message", "")) or "Issue"
     evidence = _cleanup_assessment_text(issue.get("evidence", ""))
 
     message = _strip_sample_phrase(message, sample)
@@ -1134,14 +1387,18 @@ def _assessment_phrase(issue: dict[str, Any]) -> str:
     if evidence and message and evidence.lower().startswith(message.lower()):
         evidence = _cleanup_assessment_text(evidence[len(message):])
 
+    if issue_type in {"qc", "realism"}:
+        strict_metric = evidence if _is_required_metric_statement(evidence) else (message if _is_required_metric_statement(message) else "")
+        if strict_metric:
+            return f"{strict_metric}."
+        return ""
+
     if sample and issue_type == "qc":
         if evidence:
             return f"{message} for {sample} ({evidence})."
         return f"{message} for {sample}."
 
     if evidence:
-        if issue_type == "qc" and _is_sentence_like(evidence):
-            return f"{message}."
         return f"{message} ({evidence})."
 
     return f"{message}."
@@ -1151,6 +1408,8 @@ def generateAssessmentBasis(
     warning_items: list[dict[str, Any]],
     n_samples: int,
     groups: list[str],
+    qc_report: Optional[dict[str, Any]] = None,
+    realism_metrics: Optional[dict[str, Any]] = None,
 ) -> list[str]:
     _ = n_samples  # Kept for function signature compatibility.
 
@@ -1158,7 +1417,25 @@ def generateAssessmentBasis(
     items = expandSampleLevelWarnings(items)
     group_counts = Counter([str(g).strip() for g in (groups or []) if str(g).strip()])
 
-    normalized_issues = [_assessment_issue_from_warning(item, group_counts) for item in items]
+    # Remove sample-level correlation/outlier warnings for groups already flagged at group level.
+    group_failures = {
+        _normalize_placeholder_text(w.get("group", "")).lower()
+        for w in items
+        if str(w.get("code", "")).strip() in {"group_inconsistency", "group_global_inconsistency", "global_group_inconsistency"}
+        and _normalize_placeholder_text(w.get("group", ""))
+    }
+    filtered_items: list[dict[str, Any]] = []
+    for w in items:
+        code = str(w.get("code", "")).strip()
+        grp = _normalize_placeholder_text(w.get("group", "")).lower()
+        if code in {"low_within_group_correlation_critical", "low_within_group_correlation_warning", "sample_outlier"} and grp in group_failures:
+            continue
+        filtered_items.append(w)
+
+    normalized_issues = [
+        _assessment_issue_from_warning(item, group_counts, qc_report=qc_report, realism_metrics=realism_metrics)
+        for item in filtered_items
+    ]
 
     # Deduplicate exact semantic duplicates but keep distinct sample-level bullets.
     deduped: list[dict[str, Any]] = []
@@ -1186,21 +1463,21 @@ def generateAssessmentBasis(
     for issue in deduped:
         code = str(issue.get("code", ""))
         group = _normalize_placeholder_text(issue.get("group", ""))
-        if code in {"group_inconsistency", "group_global_inconsistency"} and group:
+        if code in {"group_inconsistency", "group_global_inconsistency", "global_group_inconsistency"} and group:
             key = group.lower()
             if key not in by_group_issue:
                 by_group_issue[key] = dict(issue)
                 continue
             current = by_group_issue[key]
-            existing_msg = _cleanup_assessment_text(current.get("message", ""))
-            new_msg = _cleanup_assessment_text(issue.get("message", ""))
-            if new_msg and new_msg.lower() not in existing_msg.lower():
-                current["message"] = f"{existing_msg}, with {new_msg[:1].lower() + new_msg[1:]}"
             existing_ev = _cleanup_assessment_text(current.get("evidence", ""))
             new_ev = _cleanup_assessment_text(issue.get("evidence", ""))
-            if new_ev and new_ev.lower() not in existing_ev.lower():
+            if (not _contains_number(existing_ev)) and _contains_number(new_ev):
+                current["evidence"] = new_ev
+                existing_ev = new_ev
+            if new_ev and (_contains_number(new_ev) or _contains_threshold(new_ev)) and new_ev.lower() not in existing_ev.lower():
                 current["evidence"] = "; ".join([x for x in [existing_ev, new_ev] if x])
             current["code"] = "group_inconsistency"
+            current["message"] = f"{group.title()} group mean within-group correlation was below threshold"
             current["category"] = "A_core_qc"
         else:
             remaining.append(issue)
@@ -1208,13 +1485,12 @@ def generateAssessmentBasis(
     deduped = list(by_group_issue.values()) + remaining
 
     severity_order = {"critical": 0, "warning": 1}
-    type_order = {"qc": 0, "realism": 1, "statistical": 2}
+    type_order = {"qc": 0, "statistical": 1, "realism": 2}
     category_order = {
         "A_core_qc": 0,
         "B_support_qc": 1,
         "C_diagnostic_qc": 2,
         "D_realism": 3,
-        "E_statistical": 4,
     }
     code_priority = {
         "group_inconsistency": 0,
@@ -1226,7 +1502,7 @@ def generateAssessmentBasis(
         deduped,
         key=lambda x: (
             severity_order.get(str(x.get("severity", "warning")).lower(), 1),
-            category_order.get(str(x.get("category", "E_statistical")), 4),
+            category_order.get(str(x.get("category", "C_diagnostic_qc")), 2),
             type_order.get(str(x.get("type", "statistical")).lower(), 2),
             _normalize_placeholder_text(x.get("group", "")) or "~",
             _normalize_sample_name(x.get("sample", "")) or "~",
@@ -1236,23 +1512,42 @@ def generateAssessmentBasis(
     )
 
     if not ordered:
-        return ["No major quality or realism concerns detected."]
+        return [
+            "No QC or realism warning item exceeded configured thresholds "
+            "(library-size ratio <0.50 CRITICAL; within-group correlation <0.75 LOW; "
+            "zero-fraction >0.40 WARNING; canonical fraction >30% WARNING; extreme p-value fraction >40% WARNING)."
+        ]
 
     bullets: list[str] = []
     bullet_seen: set[str] = set()
+    metric_seen: set[str] = set()
     for issue in ordered:
         bullet = _cleanup_assessment_text(_assessment_phrase(issue))
         if bullet and not bullet.endswith("."):
             bullet = f"{bullet}."
         if not bullet:
             continue
+
+        # Merge duplicate meaning: keep only one sentence per quantified metric key.
+        if str(issue.get("type", "")).lower() in {"qc", "realism"}:
+            metric_match = re.match(r"^\s*([^=]+)=", bullet)
+            if metric_match:
+                metric_key = _cleanup_assessment_text(metric_match.group(1)).lower()
+                if metric_key in metric_seen:
+                    continue
+                metric_seen.add(metric_key)
+
         dedup_key = bullet.lower()
         if dedup_key in bullet_seen:
             continue
         bullet_seen.add(dedup_key)
         bullets.append(bullet)
 
-    return bullets or ["No major quality or realism concerns detected."]
+    return bullets or [
+        "No QC or realism warning item exceeded configured thresholds "
+        "(library-size ratio <0.50 CRITICAL; within-group correlation <0.75 LOW; "
+        "zero-fraction >0.40 WARNING; canonical fraction >30% WARNING; extreme p-value fraction >40% WARNING)."
+    ]
 
 
 def build_report(
@@ -1373,11 +1668,14 @@ def build_report(
                 }
             )
 
+    realism_metrics = computeRealismMetrics(top_genes_table)
     groups_for_assessment = _expand_groups_for_assessment(groups, qc_report)
     assessment_basis = generateAssessmentBasis(
         warning_items=all_warning_items,
         n_samples=int(summary_data.get("n_samples", 0) or 0),
         groups=groups_for_assessment,
+        qc_report=qc_report or {},
+        realism_metrics=realism_metrics,
     )
     qc_metrics_summary = computeQCMetrics(
         qc_metrics=(qc_report or {}).get("qc_metrics") if isinstance(qc_report, dict) else None,
@@ -1385,14 +1683,16 @@ def build_report(
         qc_warnings=(qc_report or {}).get("qc_warnings", []) if isinstance(qc_report, dict) else [],
         group_qc=(qc_report or {}).get("group_qc") if isinstance(qc_report, dict) else None,
     )
-    realism_metrics = computeRealismMetrics(top_genes_table)
     realism_assessment = evaluateRealism(realism_metrics)
     realism_evidence_lines = _build_realism_evidence_lines(realism_metrics)
     shared_realism_result["reasons"] = realism_evidence_lines
     realism_flag_map = _map_realism_flags_to_metrics((realism or {}).get("realism_flags", []) or [])
     if realism_flag_map.get("unmatched"):
         shared_realism_result["reasons"] = list(shared_realism_result.get("reasons", []))
-        shared_realism_result["reasons"].append("Unmapped realism flags were observed; quantitative realism metrics are reported above.")
+        unmatched_count = len(realism_flag_map.get("unmatched", []) or [])
+        shared_realism_result["reasons"].append(
+            f"unmapped realism flags = {unmatched_count} (threshold > 0)."
+        )
 
     interpretation_qc_warnings = [
         f"{w.get('severity', 'warning')}: {w.get('message', '')}" for w in all_warning_items if w.get("type") == "qc"
@@ -1405,11 +1705,32 @@ def build_report(
         realism_flags=interpretation_realism_flags,
         n_samples=int(summary_data.get("n_samples", 0) or 0),
     )
-    base_reasons = [str(x).strip() for x in (interpretation_confidence.get("reasons", []) or []) if str(x).strip()]
     n_samples = int(summary_data.get("n_samples", 0) or 0)
-    sample_reason = f"Sample size considered in interpretation (n={n_samples})."
-    if sample_reason not in base_reasons:
-        base_reasons.insert(0, sample_reason)
+    base_reasons: list[str] = [f"sample size = {n_samples} (threshold >= 6)."]
+
+    # Pull one quantitative QC and one quantitative realism sentence from assessment bullets.
+    qc_candidate: Optional[str] = None
+    qc_priority = ["group-size ratio", "library-size ratio", "zero fraction", "mean correlation"]
+    for key in qc_priority:
+        for sentence in assessment_basis:
+            s = _cleanup_assessment_text(sentence)
+            if not _is_required_metric_statement(s):
+                continue
+            if key in s.lower():
+                qc_candidate = s if s.endswith(".") else f"{s}."
+                break
+        if qc_candidate:
+            break
+    if qc_candidate:
+        base_reasons.append(qc_candidate)
+    for sentence in assessment_basis:
+        s = _cleanup_assessment_text(sentence)
+        if _is_required_metric_statement(s):
+            sl = s.lower()
+            if any(k in sl for k in ["canonical fraction", "top5 contribution", "housekeeping genes", "extreme p-value fraction", "fraction ="]):
+                base_reasons.append(s if s.endswith(".") else f"{s}.")
+                break
+
     group_qc = (qc_report or {}).get("group_qc") if isinstance((qc_report or {}).get("group_qc"), dict) else {}
     for g_name, g_obj in sorted((group_qc or {}).items(), key=lambda x: str(x[0]).lower()):
         if not isinstance(g_obj, dict):
@@ -1417,8 +1738,9 @@ def build_report(
         g_mean = _to_metric_float(g_obj.get("mean_correlation"))
         if g_mean is None:
             continue
-        g_status = str(g_obj.get("status", "UNKNOWN"))
-        base_reasons.append(f"{str(g_name).title()} group mean correlation = {g_mean:.3f} ({g_status} consistency).")
+        base_reasons.append(
+            f"{str(g_name).title()} group mean correlation = {g_mean:.3f} (threshold < 0.75)."
+        )
 
     deduped_reasons: list[str] = []
     seen_reasons: set[str] = set()
@@ -1446,6 +1768,44 @@ def build_report(
         }
     )
 
+    llm_payload = llm.model_dump() if llm else None
+    ai_interpretation_input = {
+        "pca_interpretation": (llm_payload or {}).get("pca_text", ""),
+        "deg_summary": (llm_payload or {}).get("deg_summary", ""),
+        "biological_insight": (llm_payload or {}).get("biological_insights", ""),
+        "limitations": " ".join([x for x in [interpretation_limitation_text, (llm_payload or {}).get("data_quality", "")] if str(x).strip()]),
+        "recommendations": (llm_payload or {}).get("next_steps", ""),
+    }
+
+    analysis_snapshot = build_analysis_snapshot(
+        summary_data=summary_data,
+        qc_report=qc_report or {},
+        realism_metrics=realism_metrics,
+        realism_level=shared_realism_result.get("level", "LOW"),
+    )
+
+    validated_text = validate_report_text(
+        {
+            "executive_summary": executive_summary,
+            "assessment_basis": assessment_basis,
+            "ai_interpretation": ai_interpretation_input,
+        },
+        analysis_snapshot,
+    )
+
+    executive_summary = str(validated_text.get("executive_summary", executive_summary))
+    assessment_basis = [str(x) for x in (validated_text.get("assessment_basis", assessment_basis) or []) if str(x).strip()]
+
+    validated_ai = validated_text.get("ai_interpretation", {}) if isinstance(validated_text.get("ai_interpretation", {}), dict) else {}
+    interpretation_limitation_text = str(validated_ai.get("limitations", interpretation_limitation_text) or interpretation_limitation_text)
+
+    if llm_payload is not None:
+        llm_payload["pca_text"] = str(validated_ai.get("pca_interpretation", llm_payload.get("pca_text", "")))
+        llm_payload["deg_summary"] = str(validated_ai.get("deg_summary", llm_payload.get("deg_summary", "")))
+        llm_payload["biological_insights"] = str(validated_ai.get("biological_insight", llm_payload.get("biological_insights", "")))
+        llm_payload["data_quality"] = ""
+        llm_payload["next_steps"] = str(validated_ai.get("recommendations", llm_payload.get("next_steps", "")))
+
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         summary=summary_data,
@@ -1463,13 +1823,14 @@ def build_report(
         interpretation_confidence=interpretation_confidence,
         interpretation_limitation_text=interpretation_limitation_text,
         executive_summary=executive_summary,
+        validation_log=validated_text.get("validation_log", []),
         analysis_methods=analysis_methods,
         methods_paragraph=methods_paragraph,
         results_paragraph=results_paragraph,
         figure_legends=figure_legends,
         overall_data_quality=_overall_data_quality(qc_report),
         overall_realism=shared_realism_result.get("level", "LOW"),
-        llm=llm.model_dump() if llm else None,
+        llm=llm_payload,
         plots=plots,
         job_id=job_dir.name,
     )
