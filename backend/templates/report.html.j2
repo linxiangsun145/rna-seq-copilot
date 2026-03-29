@@ -383,7 +383,7 @@
       {% if qc_items and qc_items|length > 0 %}
         {% for item in qc_items %}
           <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">
-            <strong>{{ item.level|upper }}</strong>: {{ item.message }}
+            <strong>{{ item.level|upper }}</strong>: {{ item.message }}{% if item.evidence %} ({{ item.evidence }}){% endif %}
           </div>
         {% endfor %}
       {% else %}
@@ -525,7 +525,7 @@
       <h3>QC</h3>
       {% if warning_groups and warning_groups.qc and warning_groups.qc|length > 0 %}
         {% for item in warning_groups.qc %}
-          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">{{ item.message }}</div>
+          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">{{ item.message }}{% if item.evidence %} ({{ item.evidence }}){% endif %}</div>
         {% endfor %}
       {% else %}
         <div class="box box-ok">No issues detected.</div>
@@ -534,7 +534,7 @@
       <h3>Realism</h3>
       {% if warning_groups and warning_groups.realism and warning_groups.realism|length > 0 %}
         {% for item in warning_groups.realism %}
-          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">{{ item.message }}</div>
+          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">{{ item.message }}{% if item.evidence %} ({{ item.evidence }}){% endif %}</div>
         {% endfor %}
       {% else %}
         <div class="box box-ok">No issues detected.</div>
@@ -543,7 +543,7 @@
       <h3>Statistical</h3>
       {% if warning_groups and warning_groups.statistical and warning_groups.statistical|length > 0 %}
         {% for item in warning_groups.statistical %}
-          <div class="box box-warning">{{ item.message }}</div>
+          <div class="box box-warning">{{ item.message }}{% if item.evidence %} ({{ item.evidence }}){% endif %}</div>
         {% endfor %}
       {% else %}
         <div class="box box-ok">No issues detected.</div>
@@ -572,7 +572,7 @@
         <div class="box"><strong>PCA interpretation:</strong><br />{{ llm.pca_text }}</div>
         <div class="box"><strong>DEG summary:</strong><br />{{ llm.deg_summary }}</div>
         <div class="box"><strong>Biological insight:</strong><br />{{ llm.biological_insights }}</div>
-        <div class="box"><strong>Limitations:</strong><br />{{ interpretation_limitation_text }} {% if llm.data_quality %}{{ llm.data_quality }}{% endif %}</div>
+        <div class="box"><strong>Limitations:</strong><br />{{ interpretation_limitation_text }}{% if llm.data_quality %} {{ llm.data_quality }}{% endif %}</div>
         <div class="box"><strong>Recommendations:</strong><br />{{ llm.next_steps }}</div>
       {% else %}
         <div class="box box-warning">AI interpretation is unavailable for this run. {{ interpretation_limitation_text }}</div>
