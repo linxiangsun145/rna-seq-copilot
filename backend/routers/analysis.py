@@ -14,6 +14,7 @@ from services.validator import validate_inputs
 from services.r_runner import run_deseq2
 from services.llm_client import generate_interpretation
 from services.realism_validator import validate_realism
+from services.confidence_score import compute_confidence_from_pipeline
 from services.report_builder import build_report
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,13 @@ def _run_pipeline(job_id: str, formula: str, contrast: list[str]) -> None:
                 qc_report = json.loads(qc_path.read_text(encoding="utf-8"))
             except Exception:
                 qc_report = None
+
+        confidence = compute_confidence_from_pipeline(
+            summary_dict=summary.model_dump(),
+            qc_report=qc_report,
+            realism_dict=realism.model_dump() if realism else None,
+        )
+        summary.confidence_assessment = confidence
 
         # Keep filesystem summary.json in sync with backend-enriched summary.
         summary_path = job_dir / "results" / "summary.json"

@@ -202,12 +202,17 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     elif extreme_frac > 0:
         realism_sentence = f"extreme p-value fraction = {extreme_frac:.3f} (threshold > 0.40)"
 
+    confidence = data.get("confidence_assessment") if isinstance(data.get("confidence_assessment"), dict) else {}
+    confidence_score = int(confidence.get("confidence_score", 0) or 0)
+    confidence_level = str(confidence.get("confidence_level", "LOW") or "LOW").upper()
+
     return " ".join(
         [
             f"The analysis included {n_samples} samples across {groups_text}, with {total_deg} DEGs ({deg_up} upregulated, {deg_down} downregulated).",
             f"PCA separation was classified as {pca_separation}.",
             f"QC issue: {qc_sentence}.",
             f"Realism issue: {realism_sentence}; realism level = {realism_level}.",
+            f"Global confidence score = {confidence_score}/100 ({confidence_level}).",
         ]
     )
 
@@ -1706,7 +1711,11 @@ def build_report(
         n_samples=int(summary_data.get("n_samples", 0) or 0),
     )
     n_samples = int(summary_data.get("n_samples", 0) or 0)
+    confidence_assessment = summary_data.get("confidence_assessment") if isinstance(summary_data.get("confidence_assessment"), dict) else {}
+    confidence_score = int(confidence_assessment.get("confidence_score", 0) or 0)
+    confidence_level = str(confidence_assessment.get("confidence_level", "LOW") or "LOW").upper()
     base_reasons: list[str] = [f"sample size = {n_samples} (threshold >= 6)."]
+    base_reasons.append(f"confidence score = {confidence_score} (range 0-100); level = {confidence_level}.")
 
     # Pull one quantitative QC and one quantitative realism sentence from assessment bullets.
     qc_candidate: Optional[str] = None
@@ -1752,6 +1761,9 @@ def build_report(
     interpretation_confidence["reasons"] = deduped_reasons
 
     interpretation_limitation_text = _build_interpretation_limitation(qc_report, n_samples)
+    interpretation_limitation_text = (
+        f"{interpretation_limitation_text} Confidence score = {confidence_score}/100 ({confidence_level})."
+    ).strip()
     executive_summary = generateExecutiveSummary(
         {
             "n_samples": summary_data.get("n_samples", 0),
@@ -1765,6 +1777,7 @@ def build_report(
             "realism_metrics": realism_metrics,
             "realism_level": shared_realism_result.get("level", "LOW"),
             "warning_items": all_warning_items,
+            "confidence_assessment": confidence_assessment,
         }
     )
 
@@ -1782,6 +1795,7 @@ def build_report(
         qc_report=qc_report or {},
         realism_metrics=realism_metrics,
         realism_level=shared_realism_result.get("level", "LOW"),
+        confidence_assessment=confidence_assessment,
     )
 
     validated_text = validate_report_text(
@@ -1832,6 +1846,7 @@ def build_report(
         figure_legends=figure_legends,
         overall_data_quality=_overall_data_quality(qc_report),
         overall_realism=shared_realism_result.get("level", "LOW"),
+        confidence_assessment=confidence_assessment,
         llm=llm_payload,
         plots=plots,
         job_id=job_dir.name,

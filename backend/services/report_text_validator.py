@@ -1013,12 +1013,17 @@ def rewrite_executive_summary(text: str, analysis_json: dict[str, Any]) -> str:
         analysis_json,
     )
 
+    confidence = analysis_json.get("confidence_assessment") if isinstance(analysis_json.get("confidence_assessment"), dict) else {}
+    confidence_score = int(confidence.get("confidence_score", 0) or 0)
+    confidence_level = str(confidence.get("confidence_level", "LOW") or "LOW").upper()
+
     summary = (
         f"The analysis included {n_samples} samples across {group_text} groups, with {total_deg} differentially expressed genes identified "
         f"({deg_up} upregulated and {deg_down} downregulated). "
         f"PCA separation was classified as {pca}. "
         f"Data quality assessment identified that {qc_finding.rstrip('.')[:1].lower() + qc_finding.rstrip('.')[1:]}. "
         f"Realism evaluation indicated that {realism_finding.rstrip('.')[:1].lower() + realism_finding.rstrip('.')[1:]}. "
+        f"Global confidence score = {confidence_score}/100 ({confidence_level}). "
         "These findings are consistent with a hypothesis-generating interpretation rather than a confirmatory conclusion."
     )
     return _clean_text(summary)
@@ -1159,7 +1164,13 @@ def validate_report_text(report_text: dict[str, Any], analysis_json: dict[str, A
     return cleaned
 
 
-def build_analysis_snapshot(summary_data: dict[str, Any], qc_report: dict[str, Any], realism_metrics: dict[str, Any], realism_level: str) -> dict[str, Any]:
+def build_analysis_snapshot(
+    summary_data: dict[str, Any],
+    qc_report: dict[str, Any],
+    realism_metrics: dict[str, Any],
+    realism_level: str,
+    confidence_assessment: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Create a deterministic analysis snapshot consumed by the text validator."""
     return {
         "n_samples": int(summary_data.get("n_samples", 0) or 0),
@@ -1171,4 +1182,5 @@ def build_analysis_snapshot(summary_data: dict[str, Any], qc_report: dict[str, A
         "qc_report": qc_report or {},
         "realism_metrics": realism_metrics or {},
         "realism_level": str(realism_level or "LOW").upper(),
+        "confidence_assessment": confidence_assessment or {},
     }

@@ -73,6 +73,20 @@ class AnalysisSummary(BaseModel):
     data_issues: List[str]
     warning_items: List["WarningItem"] = []
     realism_validation: Optional["RealismValidation"] = None
+    confidence_assessment: Optional["ConfidenceAssessment"] = None
+
+
+class ConfidencePenaltyBreakdown(BaseModel):
+    qc_penalty: float
+    realism_penalty: float
+    design_penalty: float
+
+
+class ConfidenceAssessment(BaseModel):
+    confidence_score: int
+    confidence_level: str  # HIGH | MEDIUM | LOW
+    score_breakdown: ConfidencePenaltyBreakdown
+    explanations: List[str]
 
 
 class WarningItem(BaseModel):

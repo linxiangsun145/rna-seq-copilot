@@ -258,6 +258,14 @@
         <div class="box {% if overall_realism == 'HIGH' %}box-critical{% elif overall_realism == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
           <strong>Data Realism Suspicion:</strong> {{ overall_realism }}
         </div>
+        <div class="box {% if confidence_assessment and confidence_assessment.confidence_level == 'LOW' %}box-critical{% elif confidence_assessment and confidence_assessment.confidence_level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
+          <strong>Analysis Confidence:</strong>
+          {% if confidence_assessment %}
+            {{ confidence_assessment.confidence_score }}/100 ({{ confidence_assessment.confidence_level }})
+          {% else %}
+            not available
+          {% endif %}
+        </div>
       </div>
       <h3>Assessment Basis</h3>
       <div class="box">
