@@ -1016,6 +1016,7 @@ def rewrite_executive_summary(text: str, analysis_json: dict[str, Any]) -> str:
     confidence = analysis_json.get("confidence_assessment") if isinstance(analysis_json.get("confidence_assessment"), dict) else {}
     confidence_score = int(confidence.get("confidence_score", 0) or 0)
     confidence_level = str(confidence.get("confidence_level", "LOW") or "LOW").upper()
+    confidence_explanation = str(confidence.get("confidence_explanation", "") or "").strip()
 
     summary = (
         f"The analysis included {n_samples} samples across {group_text} groups, with {total_deg} differentially expressed genes identified "
@@ -1024,6 +1025,7 @@ def rewrite_executive_summary(text: str, analysis_json: dict[str, Any]) -> str:
         f"Data quality assessment identified that {qc_finding.rstrip('.')[:1].lower() + qc_finding.rstrip('.')[1:]}. "
         f"Realism evaluation indicated that {realism_finding.rstrip('.')[:1].lower() + realism_finding.rstrip('.')[1:]}. "
         f"Global confidence score = {confidence_score}/100 ({confidence_level}). "
+        f"{confidence_explanation if confidence_explanation else ''} "
         "These findings are consistent with a hypothesis-generating interpretation rather than a confirmatory conclusion."
     )
     return _clean_text(summary)

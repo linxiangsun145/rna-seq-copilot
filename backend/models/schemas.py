@@ -87,6 +87,10 @@ class ConfidenceAssessment(BaseModel):
     confidence_level: str  # HIGH | MEDIUM | LOW
     score_breakdown: ConfidencePenaltyBreakdown
     explanations: List[str]
+    confidence_breakdown_text: List[str] = []
+    confidence_explanation: str = ""
+    confidence_penalty_explanations: Dict[str, List[str]] = {}
+    confidence_validation: List[str] = []
 
 
 class WarningItem(BaseModel):

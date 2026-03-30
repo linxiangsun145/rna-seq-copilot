@@ -17,6 +17,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from models.schemas import AnalysisSummary, LLMInterpretation
 from services.llm_client import evaluateInterpretationConfidence
+from services.confidence_score import inject_confidence_into_summary, render_confidence_section_html
 from services.report_text_validator import build_analysis_snapshot, validate_report_text
 
 logger = logging.getLogger(__name__)
@@ -206,15 +207,16 @@ def generateExecutiveSummary(data: dict[str, Any]) -> str:
     confidence_score = int(confidence.get("confidence_score", 0) or 0)
     confidence_level = str(confidence.get("confidence_level", "LOW") or "LOW").upper()
 
-    return " ".join(
+    summary_text = " ".join(
         [
             f"The analysis included {n_samples} samples across {groups_text}, with {total_deg} DEGs ({deg_up} upregulated, {deg_down} downregulated).",
             f"PCA separation was classified as {pca_separation}.",
             f"QC issue: {qc_sentence}.",
             f"Realism issue: {realism_sentence}; realism level = {realism_level}.",
-            f"Global confidence score = {confidence_score}/100 ({confidence_level}).",
         ]
     )
+
+    return inject_confidence_into_summary(summary_text, confidence)
 
 
 def _normalize_placeholder_text(value: Any) -> str:
@@ -1712,10 +1714,14 @@ def build_report(
     )
     n_samples = int(summary_data.get("n_samples", 0) or 0)
     confidence_assessment = summary_data.get("confidence_assessment") if isinstance(summary_data.get("confidence_assessment"), dict) else {}
+    confidence_section = render_confidence_section_html(confidence_assessment)
     confidence_score = int(confidence_assessment.get("confidence_score", 0) or 0)
     confidence_level = str(confidence_assessment.get("confidence_level", "LOW") or "LOW").upper()
     base_reasons: list[str] = [f"sample size = {n_samples} (threshold >= 6)."]
     base_reasons.append(f"confidence score = {confidence_score} (range 0-100); level = {confidence_level}.")
+    confidence_explanation_text = str(confidence_assessment.get("confidence_explanation", "") or "").strip()
+    if confidence_explanation_text:
+        base_reasons.append(confidence_explanation_text if confidence_explanation_text.endswith(".") else f"{confidence_explanation_text}.")
 
     # Pull one quantitative QC and one quantitative realism sentence from assessment bullets.
     qc_candidate: Optional[str] = None
@@ -1764,6 +1770,8 @@ def build_report(
     interpretation_limitation_text = (
         f"{interpretation_limitation_text} Confidence score = {confidence_score}/100 ({confidence_level})."
     ).strip()
+    if confidence_explanation_text:
+        interpretation_limitation_text = f"{interpretation_limitation_text} {confidence_explanation_text}".strip()
     executive_summary = generateExecutiveSummary(
         {
             "n_samples": summary_data.get("n_samples", 0),
@@ -1847,6 +1855,7 @@ def build_report(
         overall_data_quality=_overall_data_quality(qc_report),
         overall_realism=shared_realism_result.get("level", "LOW"),
         confidence_assessment=confidence_assessment,
+        confidence_section=confidence_section,
         llm=llm_payload,
         plots=plots,
         job_id=job_dir.name,

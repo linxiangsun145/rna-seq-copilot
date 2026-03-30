@@ -154,6 +154,173 @@ def generate_confidence_explanations(
     return out
 
 
+def format_confidence_breakdown(score_breakdown: dict[str, Any]) -> list[str]:
+    """Render deterministic confidence-penalty breakdown lines."""
+    qc = int(round(_safe_float(score_breakdown.get("qc_penalty"), 0.0)))
+    design = int(round(_safe_float(score_breakdown.get("design_penalty"), 0.0)))
+    realism = int(round(_safe_float(score_breakdown.get("realism_penalty"), 0.0)))
+    return [
+        f"Data Quality Penalty: -{qc}",
+        f"Experimental Design Penalty: -{design}",
+        f"Data Realism Penalty: -{realism}",
+    ]
+
+
+def generate_penalty_explanations(
+    qc_metrics: dict[str, Any],
+    realism_metrics: dict[str, Any],
+    flags: dict[str, list[str]],
+    score_breakdown: dict[str, Any],
+) -> dict[str, list[str]]:
+    """Map each non-zero penalty category to 1-2 deterministic causal explanations."""
+    out: dict[str, list[str]] = {"qc": [], "design": [], "realism": []}
+
+    qc_penalty = _safe_float(score_breakdown.get("qc_penalty"), 0.0)
+    design_penalty = _safe_float(score_breakdown.get("design_penalty"), 0.0)
+    realism_penalty = _safe_float(score_breakdown.get("realism_penalty"), 0.0)
+
+    qc_flags = [str(x) for x in (flags.get("qc_flags", []) or []) if str(x).strip()]
+    realism_flags = [str(x) for x in (flags.get("realism_flags", []) or []) if str(x).strip()]
+    group_sizes = flags.get("group_sizes", {}) if isinstance(flags.get("group_sizes", {}), dict) else {}
+    n_samples = _safe_int(flags.get("n_samples"), 0)
+
+    if qc_penalty > 0:
+        mean_corr = _safe_float(qc_metrics.get("mean_correlation"), 1.0)
+        lib_ratio = _safe_float(qc_metrics.get("min_library_size_ratio"), 1.0)
+        zero_fraction = _safe_float(qc_metrics.get("zero_fraction"), 0.0)
+
+        if mean_corr < 0.75:
+            out["qc"].append("Low sample correlation reduces data reliability")
+        if lib_ratio < 0.5 and len(out["qc"]) < 2:
+            out["qc"].append("Library-size imbalance weakens comparability across samples")
+        if zero_fraction > 0.6 and len(out["qc"]) < 2:
+            out["qc"].append("High zero fraction indicates sparse expression profiles")
+        if qc_flags and len(out["qc"]) < 2:
+            out["qc"].append("Multiple QC flags indicate elevated technical risk")
+
+    if design_penalty > 0:
+        ratio = _group_ratio_from_sizes({str(k): _safe_int(v, 0) for k, v in group_sizes.items()})
+        if n_samples < 6:
+            out["design"].append("Limited sample size reduces robustness")
+        if ratio > 1.5 and len(out["design"]) < 2:
+            out["design"].append("Group imbalance weakens statistical power")
+        if any(_safe_int(v, 0) < 3 for v in group_sizes.values()) and len(out["design"]) < 2:
+            out["design"].append("Insufficient replicates per group reduce robustness")
+
+    if realism_penalty > 0:
+        canonical_fraction = _safe_float(realism_metrics.get("canonical_fraction"), 0.0)
+        housekeeping_count = _safe_int(realism_metrics.get("housekeeping_count"), 0)
+        top_gene_fraction = _safe_float(realism_metrics.get("top_gene_fraction"), 0.0)
+
+        if canonical_fraction > 0.3:
+            out["realism"].append("High canonical gene fraction suggests potential bias")
+        if top_gene_fraction > 0.6 and len(out["realism"]) < 2:
+            out["realism"].append("Dominance of top-ranked genes indicates skewed signal")
+        if housekeeping_count >= 2 and len(out["realism"]) < 2:
+            out["realism"].append("Housekeeping-gene enrichment indicates non-specific signal")
+        if realism_flags and len(out["realism"]) < 2:
+            out["realism"].append("Multiple realism flags indicate atypical signal structure")
+
+    return out
+
+
+def generate_confidence_explanation(
+    score_breakdown: dict[str, Any],
+    explanations: dict[str, list[str]],
+) -> str:
+    """Generate one deterministic causal sentence based on largest penalty contributors."""
+    def _to_driver_phrase(text: str) -> str:
+        t = str(text or "").strip().rstrip(".")
+        if not t:
+            return ""
+        for marker in [" reduces ", " weakens ", " indicates ", " suggests ", " lowers "]:
+            idx = t.lower().find(marker)
+            if idx > 0:
+                return t[:idx].strip().lower()
+        return t[0].lower() + t[1:] if len(t) > 1 else t.lower()
+
+    categories = [
+        ("qc", _safe_float(score_breakdown.get("qc_penalty"), 0.0), "data-quality issues"),
+        ("realism", _safe_float(score_breakdown.get("realism_penalty"), 0.0), "realism concerns"),
+        ("design", _safe_float(score_breakdown.get("design_penalty"), 0.0), "design limitations"),
+    ]
+    ordered = sorted(categories, key=lambda x: (-x[1], x[0]))
+
+    selected: list[str] = []
+    for key, val, fallback in ordered:
+        if val <= 0:
+            continue
+        phrase = fallback
+        if explanations.get(key):
+            first = _to_driver_phrase(explanations[key][0])
+            if first:
+                phrase = first
+        selected.append(phrase)
+        if len(selected) >= 3:
+            break
+
+    if not selected:
+        return "The confidence score is supported by the absence of major QC, design, and realism penalties."
+
+    if len(selected) == 1:
+        return f"The confidence score is primarily driven by {selected[0]}."
+    if len(selected) == 2:
+        return f"The confidence score is primarily driven by {selected[0]} and {selected[1]}."
+    return f"The confidence score is primarily driven by {selected[0]}, {selected[1]}, and {selected[2]}."
+
+
+def inject_confidence_into_summary(summary_text: str, confidence_data: dict[str, Any]) -> str:
+    """Append confidence score and causal explanation to summary deterministically."""
+    base = str(summary_text or "").strip()
+    score = _safe_int(confidence_data.get("confidence_score"), 0)
+    level = str(confidence_data.get("confidence_level", "LOW") or "LOW").upper()
+    expl = str(confidence_data.get("confidence_explanation", "") or "").strip()
+
+    score_sentence = f"Global confidence score = {score}/100 ({level})."
+    parts = [base]
+    if score_sentence not in base:
+        parts.append(score_sentence)
+    if expl and expl not in base:
+        parts.append(expl if expl.endswith(".") else f"{expl}.")
+
+    return " ".join([p for p in parts if p]).strip()
+
+
+def render_confidence_section_html(confidence_data: dict[str, Any]) -> dict[str, Any]:
+    """Return deterministic UI-friendly structure for confidence subsection rendering."""
+    breakdown = confidence_data.get("score_breakdown", {}) if isinstance(confidence_data.get("score_breakdown", {}), dict) else {}
+    ordered_categories = sorted(
+        [
+            ("qc", _safe_float(breakdown.get("qc_penalty"), 0.0)),
+            ("design", _safe_float(breakdown.get("design_penalty"), 0.0)),
+            ("realism", _safe_float(breakdown.get("realism_penalty"), 0.0)),
+        ],
+        key=lambda x: (-x[1], x[0]),
+    )
+
+    return {
+        "score": _safe_int(confidence_data.get("confidence_score"), 0),
+        "level": str(confidence_data.get("confidence_level", "LOW") or "LOW").upper(),
+        "breakdown": [str(x) for x in (confidence_data.get("confidence_breakdown_text", []) or []) if str(x).strip()],
+        "explanation": str(confidence_data.get("confidence_explanation", "") or "").strip(),
+        "penalty_explanations": confidence_data.get("confidence_penalty_explanations", {}),
+        "ordered_categories": [k for k, v in ordered_categories if v > 0],
+    }
+
+
+def _validate_breakdown_consistency(confidence_score: int, score_breakdown: dict[str, Any]) -> list[str]:
+    logs: list[str] = []
+    qc = _safe_float(score_breakdown.get("qc_penalty"), 0.0)
+    design = _safe_float(score_breakdown.get("design_penalty"), 0.0)
+    realism = _safe_float(score_breakdown.get("realism_penalty"), 0.0)
+    expected = max(0, int(round(100 - qc - design - realism)))
+    if expected != _safe_int(confidence_score, 0):
+        logs.append(
+            f"Confidence breakdown mismatch: score={confidence_score}, expected={expected} from penalties (qc={qc}, design={design}, realism={realism})."
+        )
+    return logs
+
+
 def compute_confidence_score(
     n_samples: int,
     groups: dict[str, int],
@@ -174,15 +341,36 @@ def compute_confidence_score(
     else:
         level = "LOW"
 
+    score_breakdown = {
+        "qc_penalty": float(qc_penalty),
+        "realism_penalty": float(realism_penalty),
+        "design_penalty": float(design_penalty),
+    }
+
+    penalty_explanations = generate_penalty_explanations(
+        qc_metrics=qc_metrics,
+        realism_metrics=realism_metrics,
+        flags={
+            "qc_flags": qc_flags,
+            "realism_flags": realism_flags,
+            "group_sizes": groups,
+            "n_samples": n_samples,
+        },
+        score_breakdown=score_breakdown,
+    )
+    confidence_explanation = generate_confidence_explanation(score_breakdown, penalty_explanations)
+    confidence_breakdown_text = format_confidence_breakdown(score_breakdown)
+    consistency_logs = _validate_breakdown_consistency(score, score_breakdown)
+
     return {
         "confidence_score": score,
         "confidence_level": level,
-        "score_breakdown": {
-            "qc_penalty": float(qc_penalty),
-            "realism_penalty": float(realism_penalty),
-            "design_penalty": float(design_penalty),
-        },
+        "score_breakdown": score_breakdown,
         "explanations": generate_confidence_explanations(qc_exp, design_exp, realism_exp),
+        "confidence_breakdown_text": confidence_breakdown_text,
+        "confidence_penalty_explanations": penalty_explanations,
+        "confidence_explanation": confidence_explanation,
+        "confidence_validation": consistency_logs,
     }
 
 

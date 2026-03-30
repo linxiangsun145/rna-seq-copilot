@@ -267,6 +267,39 @@
           {% endif %}
         </div>
       </div>
+      <h3>Confidence Breakdown</h3>
+      <div class="box">
+        {% if confidence_section and confidence_section.breakdown and confidence_section.breakdown|length > 0 %}
+          <ul>
+            {% for item in confidence_section.breakdown %}
+              <li>{{ item }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <span class="muted">No confidence breakdown available.</span>
+        {% endif %}
+
+        {% if confidence_section and confidence_section.penalty_explanations %}
+          {% set order = confidence_section.ordered_categories if confidence_section.ordered_categories else ['qc', 'design', 'realism'] %}
+          {% for key in order %}
+            {% set items = confidence_section.penalty_explanations.get(key, []) %}
+            {% if items and items|length > 0 %}
+              <h4>{{ key|upper }} Causes</h4>
+              <ul>
+                {% for reason in items %}
+                  <li>{{ reason }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+
+        {% if confidence_section and confidence_section.explanation %}
+          <div class="box {% if confidence_section.level == 'LOW' %}box-critical{% elif confidence_section.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
+            {{ confidence_section.explanation }}
+          </div>
+        {% endif %}
+      </div>
       <h3>Assessment Basis</h3>
       <div class="box">
         {% if assessment_basis_grouped and assessment_basis_grouped|length > 0 %}
