@@ -147,32 +147,172 @@ def _metric_key_from_text(text: str) -> str:
     return ""
 
 
-def rewrite_threshold_phrasing(text: str, metric_code: str | None = None) -> str:
-    """Convert threshold wording into publication-style expectation phrasing."""
+def _extract_metric_value_threshold(text: str, metric_code: str | None = None) -> tuple[str, str, str, str] | None:
+    """Extract metric key, value, threshold operator, and threshold value from one statement."""
+    t = _clean_text(text)
+    if not t:
+        return None
+
+    metric_key = metric_code or _metric_key_from_text(t)
+    m_value = re.search(r"=\s*([-+]?\d*\.?\d+)", t)
+    m_threshold = re.search(
+        r"\(\s*(?:warning\s+)?threshold\s*(<=|>=|<|>)\s*([-+]?\d*\.?\d+)\s*\)",
+        t,
+        flags=re.IGNORECASE,
+    )
+    if not (m_value and m_threshold):
+        return None
+    return metric_key, m_value.group(1), m_threshold.group(1), m_threshold.group(2)
+
+
+def normalize_threshold_phrasing(text: str, metric_code: str | None = None) -> str:
+    """Normalize threshold wording into consistent expected/warning prose."""
     t = _clean_text(text)
     if not t:
         return t
 
-    metric_key = metric_code or _metric_key_from_text(t)
+    parsed = _extract_metric_value_threshold(t, metric_code)
+    if not parsed:
+        return t
 
-    def replacement(match: re.Match[str]) -> str:
-        op = match.group(1)
-        value = match.group(2)
+    metric_key, metric_value_str, op, threshold_value_str = parsed
 
-        # Metric-aware phrasing first.
-        if metric_key in {"group_size_ratio", "housekeeping_genes", "top5_contribution"}:
-            return f"(warning threshold {_format_symbol(op)} {value})"
-        if metric_key in {"mean_correlation", "library_size_ratio"}:
-            return f"(expected ≥ {value})"
-        if metric_key in {"canonical_fraction", "zero_fraction", "extreme_pvalue_fraction"}:
-            return f"(expected ≤ {value})"
+    if metric_key in {"mean_correlation", "library_size_ratio"}:
+        replacement = f"(expected ≥ {threshold_value_str})"
+    elif metric_key in {"canonical_fraction", "zero_fraction", "extreme_pvalue_fraction"}:
+        replacement = f"(expected ≤ {threshold_value_str})"
+    elif metric_key in {"group_size_ratio", "housekeeping_genes", "top5_contribution"}:
+        relation = "exceeds"
+        try:
+            mv = float(metric_value_str)
+            tv = float(threshold_value_str)
+            if abs(mv - tv) < 1e-12:
+                relation = "meets"
+            elif op in {">", ">="} and mv < tv:
+                relation = "below"
+            elif op in {"<", "<="} and mv > tv:
+                relation = "below"
+        except Exception:
+            relation = "exceeds"
 
-        # Generic deterministic inversion fallback.
+        if relation == "below":
+            replacement = f"(below warning threshold of {threshold_value_str})"
+        else:
+            replacement = f"({relation} warning threshold of {threshold_value_str})"
+    else:
         invert = {"<": "≥", "<=": ">", ">": "≤", ">=": "<"}
-        return f"(expected {invert.get(op, _format_symbol(op))} {value})"
+        replacement = f"(expected {invert.get(op, _format_symbol(op))} {threshold_value_str})"
 
-    t = re.sub(r"\(\s*threshold\s*(<=|>=|<|>)\s*([-+]?\d*\.?\d+)\s*\)", replacement, t, flags=re.IGNORECASE)
+    t = re.sub(
+        r"\(\s*(?:warning\s+)?threshold\s*(<=|>=|<|>)\s*([-+]?\d*\.?\d+)\s*\)",
+        replacement,
+        t,
+        flags=re.IGNORECASE,
+    )
     return _clean_text(t)
+
+
+def rewrite_threshold_phrasing(text: str, metric_code: str | None = None) -> str:
+    """Backward-compatible wrapper for threshold phrasing normalization."""
+    return normalize_threshold_phrasing(text, metric_code)
+
+
+def infer_meaning_phrase(metric_code: str, value: float | None, threshold: float | None) -> str:
+    """Infer deterministic scientific meaning phrase from metric semantics."""
+    code = str(metric_code or "").strip()
+
+    if code == "mean_correlation":
+        if value is not None and threshold is not None and value < threshold:
+            return "Low control-group consistency was observed"
+        return "Control-group consistency was within expected range"
+    if code == "library_size_ratio":
+        if value is not None and threshold is not None and value < threshold:
+            return "Library-size imbalance was observed"
+        return "Library-size balance was within expected range"
+    if code == "group_size_ratio":
+        if value is not None and threshold is not None and value > threshold:
+            return "Group imbalance was observed"
+        if value is not None and threshold is not None and abs(value - threshold) < 1e-12:
+            return "Group imbalance met the warning threshold"
+        return "Group-size distribution was within expected range"
+    if code == "canonical_fraction":
+        if value is not None and threshold is not None and value > threshold:
+            return "Borderline canonical-gene enrichment was observed"
+        if value is not None and threshold is not None and abs(value - threshold) < 1e-12:
+            return "Borderline canonical-gene enrichment was observed"
+        return "Canonical-gene enrichment was within expected range"
+    if code == "housekeeping_genes":
+        if value is not None and threshold is not None and value > threshold:
+            return "Elevated housekeeping-gene signal was observed"
+        if value is not None and threshold is not None and abs(value - threshold) < 1e-12:
+            return "Housekeeping-gene signal met the warning threshold"
+        return "Housekeeping-gene signal was limited"
+    if code == "top5_contribution":
+        if value is not None and threshold is not None and value > threshold:
+            return "Expression dominance by top-ranked genes was observed"
+        return "Top-gene contribution was within expected range"
+    if code == "zero_fraction":
+        if value is not None and threshold is not None and value > threshold:
+            return "High zero-count burden was observed"
+        return "Zero-count burden was within expected range"
+    if code == "extreme_pvalue_fraction":
+        if value is not None and threshold is not None and value > threshold:
+            return "P-value distribution anomaly was observed"
+        return "P-value distribution was within expected range"
+
+    return "A quantified finding was observed"
+
+
+def polish_metric_sentence(text: str, metric_code: str | None = None) -> str:
+    """Convert metric-log style statements into scientific Results-style prose."""
+    t = _clean_text(text)
+    if not t:
+        return t
+
+    normalized = normalize_threshold_phrasing(upgrade_metric_name(t), metric_code)
+    metric_key = metric_code or _metric_key_from_text(normalized)
+
+    match = re.search(
+        r"([^=()]+?)\s*=\s*([-+]?\d*\.?\d+)\s*\(([^)]*)\)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return polish_scientific_phrasing(normalized if normalized.endswith(".") else f"{normalized}.")
+
+    metric_label = _clean_text(match.group(1))
+    value_str = match.group(2)
+    threshold_text = _clean_text(match.group(3))
+
+    value_num = None
+    threshold_num = None
+    try:
+        value_num = float(value_str)
+    except Exception:
+        value_num = None
+
+    tnum = re.search(r"([-+]?\d*\.?\d+)", threshold_text)
+    if tnum:
+        try:
+            threshold_num = float(tnum.group(1))
+        except Exception:
+            threshold_num = None
+
+    meaning = infer_meaning_phrase(metric_key, value_num, threshold_num)
+    sentence = f"{meaning} ({metric_label} = {value_str}; {threshold_text})."
+    return polish_scientific_phrasing(sentence)
+
+
+def rewrite_summary_sentence(text: str, analysis_json: dict[str, Any]) -> str:
+    """Rewrite one summary finding sentence into meaning-first scientific prose."""
+    _ = analysis_json
+    t = _clean_text(text)
+    if not t:
+        return ""
+
+    t = re.sub(r"^(Data quality assessment (identified|indicated)\s*)", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^(Realism evaluation (identified|indicated)\s*)", "", t, flags=re.IGNORECASE)
+    return polish_metric_sentence(t)
 
 
 def polish_scientific_phrasing(text: str) -> str:
@@ -187,7 +327,6 @@ def polish_scientific_phrasing(text: str) -> str:
         r"\bRealism issue\s*:\s*": "Realism evaluation identified ",
         r"\bissue\s*:\s*": "identified ",
         r"\bwarning\s*:\s*": "observed ",
-        r"\bdetected\b": "identified",
         r"\bpossible issue\b": "measured deviation",
         r"\btechnical warning\b": "quantified technical anomaly",
         r"\brealism-related warning\b": "quantified realism anomaly",
@@ -228,6 +367,60 @@ def merge_duplicate_statements(items: list[str]) -> list[str]:
     return merged
 
 
+def sort_realism_items(items: list[str]) -> list[str]:
+    """Sort realism statements as canonical -> housekeeping -> distribution/dominance -> others."""
+    def sort_key(statement: str) -> tuple[int, str]:
+        t = str(statement or "").lower()
+        if "canonical" in t:
+            return (0, t)
+        if "housekeeping" in t:
+            return (1, t)
+        if any(k in t for k in ["distribution", "dominance", "top 5 gene contribution", "top5 contribution", "p-value", "pvalue", "extreme p-value"]):
+            return (2, t)
+        return (3, t)
+
+    return sorted([_clean_text(x) for x in (items or []) if _clean_text(x)], key=sort_key)
+
+
+def relabel_assessment_groups(groups: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Ensure correlation/consistency findings are always under QC - Group-level."""
+    relabeled = {k: list(v) for k, v in (groups or {}).items()}
+    relabeled.setdefault("QC - Group-level", [])
+
+    correlation_markers = [
+        "mean correlation",
+        "group consistency",
+        "internal consistency",
+        "control-group consistency",
+        "treated-group consistency",
+    ]
+
+    for source_key in list(relabeled.keys()):
+        if source_key == "QC - Group-level":
+            continue
+
+        kept: list[str] = []
+        for item in relabeled.get(source_key, []):
+            tl = str(item or "").lower()
+            if any(marker in tl for marker in correlation_markers):
+                relabeled["QC - Group-level"].append(_clean_text(item))
+            else:
+                kept.append(_clean_text(item))
+        relabeled[source_key] = kept
+
+    ordered: dict[str, list[str]] = {}
+    for section in ASSESSMENT_GROUP_ORDER:
+        vals = merge_duplicate_statements(relabeled.get(section, []))
+        if vals:
+            ordered[section] = vals
+    for section, vals in relabeled.items():
+        if section not in ordered:
+            dedup = merge_duplicate_statements(vals)
+            if dedup:
+                ordered[section] = dedup
+    return ordered
+
+
 def reorder_assessment_basis(items: list[str]) -> list[str]:
     groups = group_assessment_basis(items)
     ordered: list[str] = []
@@ -259,7 +452,11 @@ def group_assessment_basis(items: list[str]) -> dict[str, list[str]]:
         else:
             grouped["QC - Diagnostic"].append(t)
 
-    return {k: v for k, v in grouped.items() if v}
+    compact = {k: v for k, v in grouped.items() if v}
+    compact = relabel_assessment_groups(compact)
+    if compact.get("Realism"):
+        compact["Realism"] = sort_realism_items(compact["Realism"])
+    return compact
 
 
 def _group_inconsistency_exists(analysis_json: dict[str, Any]) -> bool:
@@ -363,10 +560,7 @@ def rewrite_realism_statement(statement: str, analysis_json: dict[str, Any]) -> 
 
 
 def _apply_metric_threshold_upgrade(text: str) -> str:
-    t = upgrade_metric_name(text)
-    metric_key = _metric_key_from_text(t)
-    t = rewrite_threshold_phrasing(t, metric_key)
-    t = polish_scientific_phrasing(t)
+    t = polish_metric_sentence(text)
     return t
 
 
@@ -462,18 +656,49 @@ def rewrite_executive_summary(text: str, analysis_json: dict[str, Any]) -> str:
     else:
         group_text = "unspecified"
 
-    qc_finding = _apply_metric_threshold_upgrade(_major_qc_issue_text(analysis_json) or "sample size = 0 (threshold >= 6).")
-    realism_finding = _apply_metric_threshold_upgrade(_major_realism_issue_text(analysis_json) or "canonical gene fraction = 0.000 (threshold > 0.30).")
+    qc_finding = rewrite_summary_sentence(
+        _major_qc_issue_text(analysis_json) or "sample size = 0 (threshold >= 6).",
+        analysis_json,
+    )
+    realism_finding = rewrite_summary_sentence(
+        _major_realism_issue_text(analysis_json) or "canonical gene fraction = 0.000 (threshold > 0.30).",
+        analysis_json,
+    )
 
     summary = (
         f"The analysis included {n_samples} samples across {group_text} groups, with {total_deg} differentially expressed genes identified "
         f"({deg_up} upregulated and {deg_down} downregulated). "
         f"PCA separation was classified as {pca}. "
-        f"Data quality assessment identified {qc_finding.rstrip('.')}. "
-        f"Realism evaluation identified {realism_finding.rstrip('.')}. "
+        f"Data quality assessment identified that {qc_finding.rstrip('.')[:1].lower() + qc_finding.rstrip('.')[1:]}. "
+        f"Realism evaluation indicated that {realism_finding.rstrip('.')[:1].lower() + realism_finding.rstrip('.')[1:]}. "
         "These findings are consistent with a hypothesis-generating interpretation rather than a confirmatory conclusion."
     )
     return _clean_text(summary)
+
+
+def apply_final_final_patch(report_text: dict[str, Any], analysis_json: dict[str, Any]) -> dict[str, Any]:
+    """Apply final deterministic micro-polish for wording and grouping semantics."""
+    out = dict(report_text or {})
+
+    out["executive_summary"] = rewrite_executive_summary(out.get("executive_summary", ""), analysis_json)
+
+    basis_items = [polish_metric_sentence(x) for x in (out.get("assessment_basis", []) or []) if _clean_text(x)]
+    basis_items = merge_duplicate_statements(basis_items)
+    grouped = group_assessment_basis(basis_items)
+    grouped = relabel_assessment_groups(grouped)
+
+    flattened: list[str] = []
+    for section in ASSESSMENT_GROUP_ORDER:
+        flattened.extend(grouped.get(section, []))
+
+    out["assessment_basis"] = flattened
+    out["assessment_basis_grouped"] = grouped
+
+    ai = out.get("ai_interpretation", {})
+    if isinstance(ai, dict):
+        out["ai_interpretation"] = {k: polish_scientific_phrasing(v) for k, v in ai.items()}
+
+    return out
 
 
 def validate_executive_summary(text: str, analysis_json: dict[str, Any]) -> tuple[str, list[str]]:
@@ -563,6 +788,9 @@ def validate_report_text(report_text: dict[str, Any], analysis_json: dict[str, A
     clean_ai, ai_log = validate_ai_interpretation(ai_section, analysis_json)
     cleaned["ai_interpretation"] = clean_ai
     validation_log.extend(ai_log)
+
+    cleaned = apply_final_final_patch(cleaned, analysis_json)
+    validation_log.append("Applied FINAL FINAL wording/grouping micro-polish layer")
 
     cleaned["validation_log"] = merge_duplicate_statements(validation_log)
     return cleaned
