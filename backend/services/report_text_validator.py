@@ -315,6 +315,194 @@ def rewrite_summary_sentence(text: str, analysis_json: dict[str, Any]) -> str:
     return polish_metric_sentence(t)
 
 
+def fix_double_verbs(text: str) -> str:
+    """Remove redundant double-verb constructions in scientific sentences."""
+    t = _clean_text(text)
+    if not t:
+        return t
+
+    t = re.sub(
+        r"\bData quality assessment identified that\s+(.+?)\s+was observed\s*\(",
+        r"Data quality assessment indicated \1 (",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\bRealism evaluation indicated that\s+(.+?)\s+was observed\s*\(",
+        r"Realism evaluation indicated \1 (",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b(identified|indicated) that\s+(.+?)\s+was observed\s*\(",
+        r"indicated \2 (",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(r"\bindicated that\s+", "indicated ", t, flags=re.IGNORECASE)
+    return _clean_text(t)
+
+
+def normalize_scientific_phrasing(text: str, metric_code: str | None = None) -> str:
+    """Apply deterministic, concise scientific phrasing normalization."""
+    _ = metric_code
+    t = _clean_text(text)
+    if not t:
+        return t
+
+    t = re.sub(r"\bmet the warning threshold\b", "reached the warning threshold", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bmeets warning threshold of\b", "reached warning threshold of", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bis at the warning threshold of\b", "reached warning threshold of", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bwas observed\s*\(", "was observed (", t)
+    t = re.sub(r"\bindicated\s*\(", "indicated (", t)
+    return _clean_text(t)
+
+
+def rewrite_pca_sentence(text: str) -> str:
+    """Rewrite PCA sentence into concise Results-style phrasing without changing meaning."""
+    t = _clean_text(text)
+    if not t:
+        return t
+
+    def _repl(match: re.Match[str]) -> str:
+        level = _clean_text(match.group(1)).lower()
+        return f"PCA showed {level} separation between groups."
+
+    t = re.sub(
+        r"\bPCA separation was classified as\s+([a-zA-Z-]+)\s*\.",
+        _repl,
+        t,
+        flags=re.IGNORECASE,
+    )
+    return _clean_text(t)
+
+
+def _metric_value_matches(text: str) -> list[tuple[str, str, str]]:
+    matches: list[tuple[str, str, str]] = []
+    for m in re.finditer(r"([A-Za-z0-9\- ]+?)\s*=\s*([-+]?\d*\.?\d+)", str(text or "")):
+        metric = _clean_text(m.group(1)).lower()
+        value_str = m.group(2)
+        decimals = "0"
+        if "." in value_str:
+            decimals = str(len(value_str.split(".", 1)[1]))
+        matches.append((metric, value_str, decimals))
+    return matches
+
+
+def _build_metric_registry(report_text: dict[str, Any]) -> dict[str, int]:
+    """Build deterministic precision registry from existing rendered values."""
+    registry: dict[str, int] = {}
+
+    sources: list[str] = []
+    sources.extend([str(x) for x in (report_text.get("assessment_basis", []) or [])])
+    sources.append(str(report_text.get("executive_summary", "") or ""))
+
+    for line in sources:
+        for metric, _value, dec_str in _metric_value_matches(line):
+            dec = int(dec_str)
+            if metric not in registry:
+                registry[metric] = dec
+            else:
+                registry[metric] = max(registry[metric], dec)
+
+    return registry
+
+
+def unify_metric_precision(text: str, metric_registry: dict[str, int]) -> str:
+    """Unify metric value precision across sections without changing numeric values."""
+    t = str(text or "")
+    if not t:
+        return t
+
+    def _repl(match: re.Match[str]) -> str:
+        metric_label = _clean_text(match.group(1))
+        metric_key = metric_label.lower()
+        value_str = match.group(2)
+        if metric_key not in metric_registry:
+            return match.group(0)
+
+        target_dec = metric_registry[metric_key]
+        if target_dec <= 0:
+            return f"{metric_label} = {value_str}"
+
+        try:
+            num = float(value_str)
+            formatted = f"{num:.{target_dec}f}"
+            return f"{metric_label} = {formatted}"
+        except Exception:
+            return match.group(0)
+
+    t = re.sub(r"([A-Za-z0-9\- ]+?)\s*=\s*([-+]?\d*\.?\d+)", _repl, t)
+    return _clean_text(t)
+
+
+def reduce_sentence_redundancy(lines: list[str]) -> list[str]:
+    """Reduce repeated sentence patterns deterministically across consecutive lines."""
+    out: list[str] = []
+    observed_streak = 0
+
+    for raw in lines or []:
+        line = _clean_text(raw)
+        if not line:
+            continue
+
+        if re.search(r"\bwas observed\s*\(", line, flags=re.IGNORECASE):
+            observed_streak += 1
+        else:
+            observed_streak = 0
+
+        if observed_streak >= 3:
+            if observed_streak % 2 == 1:
+                line = re.sub(r"\bwas observed\s*\(", "was detected (", line, flags=re.IGNORECASE)
+            else:
+                line = re.sub(r"\bwas observed\s*\(", "was noted (", line, flags=re.IGNORECASE)
+
+        out.append(_clean_text(line if line.endswith(".") else f"{line}."))
+
+    return out
+
+
+def apply_final_micro_polish(report_text: dict[str, Any]) -> dict[str, Any]:
+    """Apply final deterministic micro-polish without changing structure or numeric values."""
+    out = dict(report_text or {})
+
+    registry = _build_metric_registry(out)
+
+    summary = _clean_text(out.get("executive_summary", ""))
+    summary = rewrite_pca_sentence(summary)
+    summary = fix_double_verbs(summary)
+    summary = normalize_scientific_phrasing(summary)
+    summary = unify_metric_precision(summary, registry)
+    out["executive_summary"] = summary
+
+    basis_lines = [str(x) for x in (out.get("assessment_basis", []) or [])]
+    polished_basis: list[str] = []
+    for line in basis_lines:
+        v = _clean_text(line)
+        v = fix_double_verbs(v)
+        v = normalize_scientific_phrasing(v, _metric_key_from_text(v))
+        v = unify_metric_precision(v, registry)
+        polished_basis.append(v)
+    out["assessment_basis"] = reduce_sentence_redundancy(polished_basis)
+
+    grouped = out.get("assessment_basis_grouped", {})
+    if isinstance(grouped, dict):
+        polished_grouped: dict[str, list[str]] = {}
+        for section, lines in grouped.items():
+            section_lines = [str(x) for x in (lines or [])]
+            local: list[str] = []
+            for line in section_lines:
+                v = _clean_text(line)
+                v = fix_double_verbs(v)
+                v = normalize_scientific_phrasing(v, _metric_key_from_text(v))
+                v = unify_metric_precision(v, registry)
+                local.append(v)
+            polished_grouped[str(section)] = reduce_sentence_redundancy(local)
+        out["assessment_basis_grouped"] = polished_grouped
+
+    return out
+
+
 def polish_scientific_phrasing(text: str) -> str:
     """Normalize tone into publication-style scientific English."""
     original = _clean_text(text)
@@ -791,6 +979,9 @@ def validate_report_text(report_text: dict[str, Any], analysis_json: dict[str, A
 
     cleaned = apply_final_final_patch(cleaned, analysis_json)
     validation_log.append("Applied FINAL FINAL wording/grouping micro-polish layer")
+
+    cleaned = apply_final_micro_polish(cleaned)
+    validation_log.append("Applied FINAL MICRO phrasing consistency polish")
 
     cleaned["validation_log"] = merge_duplicate_statements(validation_log)
     return cleaned
