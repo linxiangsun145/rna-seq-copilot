@@ -32,6 +32,39 @@ ASSESSMENT_GROUP_ORDER = [
 ]
 
 
+# Centralized display-precision policy for all rendered report text.
+METRIC_PRECISION: dict[str, int] = {
+    "canonical_fraction": 3,
+    "mean_correlation": 3,
+    "extreme_pvalue_fraction": 3,
+    "zero_fraction": 3,
+    "library_size_ratio": 3,
+    "top5_contribution": 3,
+    "group_size_ratio": 2,
+    "housekeeping_genes": 0,
+    "deg_up": 0,
+    "deg_down": 0,
+    "deg_total": 0,
+}
+
+METRIC_LABEL_TO_CODE: dict[str, str] = {
+    "canonical gene fraction": "canonical_fraction",
+    "canonical fraction": "canonical_fraction",
+    "control group mean correlation": "mean_correlation",
+    "treated group mean correlation": "mean_correlation",
+    "mean correlation": "mean_correlation",
+    "group mean correlation": "mean_correlation",
+    "top 5 gene contribution": "top5_contribution",
+    "top5 contribution": "top5_contribution",
+    "group size ratio": "group_size_ratio",
+    "library size ratio": "library_size_ratio",
+    "zero-count fraction": "zero_fraction",
+    "zero fraction": "zero_fraction",
+    "extreme p-value fraction": "extreme_pvalue_fraction",
+    "housekeeping genes detected": "housekeeping_genes",
+}
+
+
 def _clean_text(text: Any) -> str:
     t = str(text or "").strip()
     if not t:
@@ -145,6 +178,167 @@ def _metric_key_from_text(text: str) -> str:
     if "extreme p-value fraction" in t:
         return "extreme_pvalue_fraction"
     return ""
+
+
+def get_metric_precision(metric_code: str) -> int:
+    """Return the central display precision for a metric code."""
+    return int(METRIC_PRECISION.get(str(metric_code or "").strip(), 3))
+
+
+def format_metric_value(metric_code: str, value: Any) -> str:
+    """Format numeric value using the central metric precision policy."""
+    code = str(metric_code or "").strip()
+    precision = get_metric_precision(code)
+
+    try:
+        num = float(value)
+    except Exception:
+        return _clean_text(value)
+
+    if precision <= 0:
+        return str(int(round(num)))
+    return f"{num:.{precision}f}"
+
+
+def _metric_code_from_label(label: str) -> str:
+    key = _clean_text(label).lower()
+    if key in METRIC_LABEL_TO_CODE:
+        return METRIC_LABEL_TO_CODE[key]
+    return _metric_key_from_text(key)
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _extract_group_size_ratio_from_qc(qc_report: dict[str, Any]) -> float | None:
+    reps = qc_report.get("replicates_per_group") if isinstance(qc_report.get("replicates_per_group"), dict) else {}
+    if len(reps) < 2:
+        return None
+    try:
+        nums = [int(v) for v in reps.values()]
+        low = min(nums)
+        high = max(nums)
+        if low <= 0:
+            return None
+        return float(high) / float(low)
+    except Exception:
+        return None
+
+
+def _build_metric_value_registry(analysis_json: dict[str, Any]) -> dict[str, Any]:
+    """Build a canonical metric value registry from structured analysis outputs."""
+    registry: dict[str, Any] = {}
+
+    realism = analysis_json.get("realism_metrics") if isinstance(analysis_json.get("realism_metrics"), dict) else {}
+    qc_report = analysis_json.get("qc_report") if isinstance(analysis_json.get("qc_report"), dict) else {}
+
+    if "canonical_fraction" in realism:
+        registry["canonical_fraction"] = realism.get("canonical_fraction")
+    if "top5_contribution" in realism:
+        registry["top5_contribution"] = realism.get("top5_contribution")
+    if "extreme_pvalue_fraction" in realism:
+        registry["extreme_pvalue_fraction"] = realism.get("extreme_pvalue_fraction")
+
+    hk = realism.get("housekeeping_genes")
+    if isinstance(hk, list):
+        registry["housekeeping_genes"] = len([x for x in hk if str(x).strip()])
+
+    group_qc = qc_report.get("group_qc") if isinstance(qc_report.get("group_qc"), dict) else {}
+    for group_obj in group_qc.values():
+        if isinstance(group_obj, dict) and "mean_correlation" in group_obj:
+            registry["mean_correlation"] = group_obj.get("mean_correlation")
+            break
+
+    qc_metrics = qc_report.get("qc_metrics") if isinstance(qc_report.get("qc_metrics"), dict) else {}
+    zero_obj = qc_metrics.get("zero_fraction") if isinstance(qc_metrics.get("zero_fraction"), dict) else {}
+    if "mean" in zero_obj:
+        registry["zero_fraction"] = zero_obj.get("mean")
+
+    library_obj = qc_metrics.get("library_size") if isinstance(qc_metrics.get("library_size"), dict) else {}
+    if "min_median_ratio" in library_obj:
+        registry["library_size_ratio"] = library_obj.get("min_median_ratio")
+
+    ratio = _extract_group_size_ratio_from_qc(qc_report)
+    if ratio is not None:
+        registry["group_size_ratio"] = ratio
+
+    registry["deg_up"] = int(analysis_json.get("deg_up", 0) or 0)
+    registry["deg_down"] = int(analysis_json.get("deg_down", 0) or 0)
+    registry["deg_total"] = registry["deg_up"] + registry["deg_down"]
+
+    return registry
+
+
+def normalize_metric_display(text: str, metric_registry: dict[str, Any]) -> tuple[str, list[tuple[str, str, str]]]:
+    """Normalize metric value display using central policy and canonical metric registry."""
+    t = str(text or "")
+    changes: list[tuple[str, str, str]] = []
+    if not t:
+        return t, changes
+
+    def _repl(match: re.Match[str]) -> str:
+        raw_label = str(match.group(1) or "")
+        leading_ws_match = re.match(r"^\s*", raw_label)
+        leading_ws = leading_ws_match.group(0) if leading_ws_match else ""
+        label_body = raw_label[len(leading_ws):]
+
+        conjunction = ""
+        for c in ["and ", "or "]:
+            if label_body.lower().startswith(c):
+                conjunction = label_body[: len(c)]
+                label_body = label_body[len(c):]
+                break
+
+        metric_label = _clean_text(label_body)
+        shown_value = _clean_text(match.group(2))
+        code = _metric_code_from_label(metric_label)
+        if not code:
+            return match.group(0)
+
+        canonical_raw = metric_registry.get(code, shown_value)
+        canonical_fmt = format_metric_value(code, canonical_raw)
+        if shown_value != canonical_fmt:
+            changes.append((code, shown_value, canonical_fmt))
+        return f"{leading_ws}{conjunction}{metric_label} = {canonical_fmt}"
+
+    t = re.sub(r"([A-Za-z0-9\- ]+?)\s*=\s*([-+]?\d*\.?\d+)", _repl, t)
+    return _clean_text(t), changes
+
+
+def validate_metric_display_consistency(report_text: dict[str, Any], metric_registry: dict[str, Any]) -> list[str]:
+    """Validate rendered metric precision consistency across sections."""
+    logs: list[str] = []
+    observed: dict[str, set[str]] = {}
+
+    def _collect_from_text(text: str, section: str) -> None:
+        for m in re.finditer(r"([A-Za-z0-9\- ]+?)\s*=\s*([-+]?\d*\.?\d+)", str(text or "")):
+            code = _metric_code_from_label(m.group(1))
+            if not code:
+                continue
+            shown = _clean_text(m.group(2))
+            observed.setdefault(code, set()).add(shown)
+            expected = format_metric_value(code, metric_registry.get(code, shown))
+            if shown != expected:
+                logs.append(f"Metric display mismatch for {code} in {section}: {shown} vs expected {expected}")
+
+    _collect_from_text(str(report_text.get("executive_summary", "")), "Executive Summary")
+    for item in report_text.get("assessment_basis", []) or []:
+        _collect_from_text(str(item), "Assessment Basis")
+
+    ai = report_text.get("ai_interpretation", {})
+    if isinstance(ai, dict):
+        for key, val in ai.items():
+            _collect_from_text(str(val), f"AI Interpretation/{key}")
+
+    for code, values in observed.items():
+        if len(values) > 1:
+            logs.append(f"Inconsistent display precision for {code}: {sorted(values)}")
+
+    return logs
 
 
 def _extract_metric_value_threshold(text: str, metric_code: str | None = None) -> tuple[str, str, str, str] | None:
@@ -377,63 +571,9 @@ def rewrite_pca_sentence(text: str) -> str:
     return _clean_text(t)
 
 
-def _metric_value_matches(text: str) -> list[tuple[str, str, str]]:
-    matches: list[tuple[str, str, str]] = []
-    for m in re.finditer(r"([A-Za-z0-9\- ]+?)\s*=\s*([-+]?\d*\.?\d+)", str(text or "")):
-        metric = _clean_text(m.group(1)).lower()
-        value_str = m.group(2)
-        decimals = "0"
-        if "." in value_str:
-            decimals = str(len(value_str.split(".", 1)[1]))
-        matches.append((metric, value_str, decimals))
-    return matches
-
-
-def _build_metric_registry(report_text: dict[str, Any]) -> dict[str, int]:
-    """Build deterministic precision registry from existing rendered values."""
-    registry: dict[str, int] = {}
-
-    sources: list[str] = []
-    sources.extend([str(x) for x in (report_text.get("assessment_basis", []) or [])])
-    sources.append(str(report_text.get("executive_summary", "") or ""))
-
-    for line in sources:
-        for metric, _value, dec_str in _metric_value_matches(line):
-            dec = int(dec_str)
-            if metric not in registry:
-                registry[metric] = dec
-            else:
-                registry[metric] = max(registry[metric], dec)
-
-    return registry
-
-
-def unify_metric_precision(text: str, metric_registry: dict[str, int]) -> str:
-    """Unify metric value precision across sections without changing numeric values."""
-    t = str(text or "")
-    if not t:
-        return t
-
-    def _repl(match: re.Match[str]) -> str:
-        metric_label = _clean_text(match.group(1))
-        metric_key = metric_label.lower()
-        value_str = match.group(2)
-        if metric_key not in metric_registry:
-            return match.group(0)
-
-        target_dec = metric_registry[metric_key]
-        if target_dec <= 0:
-            return f"{metric_label} = {value_str}"
-
-        try:
-            num = float(value_str)
-            formatted = f"{num:.{target_dec}f}"
-            return f"{metric_label} = {formatted}"
-        except Exception:
-            return match.group(0)
-
-    t = re.sub(r"([A-Za-z0-9\- ]+?)\s*=\s*([-+]?\d*\.?\d+)", _repl, t)
-    return _clean_text(t)
+def unify_metric_precision(text: str, metric_registry: dict[str, Any]) -> tuple[str, list[tuple[str, str, str]]]:
+    """Unify metric display using centralized precision policy."""
+    return normalize_metric_display(text, metric_registry)
 
 
 def reduce_sentence_redundancy(lines: list[str]) -> list[str]:
@@ -462,17 +602,20 @@ def reduce_sentence_redundancy(lines: list[str]) -> list[str]:
     return out
 
 
-def apply_final_micro_polish(report_text: dict[str, Any]) -> dict[str, Any]:
+def apply_final_micro_polish(report_text: dict[str, Any], analysis_json: dict[str, Any]) -> dict[str, Any]:
     """Apply final deterministic micro-polish without changing structure or numeric values."""
     out = dict(report_text or {})
 
-    registry = _build_metric_registry(out)
+    metric_registry = _build_metric_value_registry(analysis_json if isinstance(analysis_json, dict) else {})
+    normalization_log: list[str] = []
 
     summary = _clean_text(out.get("executive_summary", ""))
     summary = rewrite_pca_sentence(summary)
     summary = fix_double_verbs(summary)
     summary = normalize_scientific_phrasing(summary)
-    summary = unify_metric_precision(summary, registry)
+    summary, summary_changes = unify_metric_precision(summary, metric_registry)
+    for code, old, new in summary_changes:
+        normalization_log.append(f"Normalized {code} display from {old} to {new} in Executive Summary")
     out["executive_summary"] = summary
 
     basis_lines = [str(x) for x in (out.get("assessment_basis", []) or [])]
@@ -481,7 +624,9 @@ def apply_final_micro_polish(report_text: dict[str, Any]) -> dict[str, Any]:
         v = _clean_text(line)
         v = fix_double_verbs(v)
         v = normalize_scientific_phrasing(v, _metric_key_from_text(v))
-        v = unify_metric_precision(v, registry)
+        v, basis_changes = unify_metric_precision(v, metric_registry)
+        for code, old, new in basis_changes:
+            normalization_log.append(f"Normalized {code} display from {old} to {new} in Assessment Basis")
         polished_basis.append(v)
     out["assessment_basis"] = reduce_sentence_redundancy(polished_basis)
 
@@ -495,10 +640,25 @@ def apply_final_micro_polish(report_text: dict[str, Any]) -> dict[str, Any]:
                 v = _clean_text(line)
                 v = fix_double_verbs(v)
                 v = normalize_scientific_phrasing(v, _metric_key_from_text(v))
-                v = unify_metric_precision(v, registry)
+                v, grouped_changes = unify_metric_precision(v, metric_registry)
+                for code, old, new in grouped_changes:
+                    normalization_log.append(f"Normalized {code} display from {old} to {new} in Assessment Basis Grouped")
                 local.append(v)
             polished_grouped[str(section)] = reduce_sentence_redundancy(local)
         out["assessment_basis_grouped"] = polished_grouped
+
+    ai = out.get("ai_interpretation", {})
+    if isinstance(ai, dict):
+        polished_ai: dict[str, str] = {}
+        for key, value in ai.items():
+            s = normalize_scientific_phrasing(_clean_text(value))
+            s, ai_changes = unify_metric_precision(s, metric_registry)
+            for code, old, new in ai_changes:
+                normalization_log.append(f"Normalized {code} display from {old} to {new} in AI Interpretation/{key}")
+            polished_ai[str(key)] = s
+        out["ai_interpretation"] = polished_ai
+
+    out["precision_normalization_log"] = merge_duplicate_statements(normalization_log)
 
     return out
 
@@ -980,8 +1140,20 @@ def validate_report_text(report_text: dict[str, Any], analysis_json: dict[str, A
     cleaned = apply_final_final_patch(cleaned, analysis_json)
     validation_log.append("Applied FINAL FINAL wording/grouping micro-polish layer")
 
-    cleaned = apply_final_micro_polish(cleaned)
+    cleaned = apply_final_micro_polish(cleaned, analysis_json)
     validation_log.append("Applied FINAL MICRO phrasing consistency polish")
+
+    for item in cleaned.get("precision_normalization_log", []) or []:
+        validation_log.append(str(item))
+    cleaned.pop("precision_normalization_log", None)
+
+    metric_registry = _build_metric_value_registry(analysis_json)
+    precision_check_logs = validate_metric_display_consistency(cleaned, metric_registry)
+    validation_log.extend(precision_check_logs)
+    if precision_check_logs:
+        validation_log.append("Metric display precision consistency check reported mismatches")
+    else:
+        validation_log.append("Metric display precision consistency check passed")
 
     cleaned["validation_log"] = merge_duplicate_statements(validation_log)
     return cleaned
