@@ -15,6 +15,41 @@ from models.schemas import AnalysisSummary
 logger = logging.getLogger(__name__)
 
 
+def _coerce_optional_string(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        v = value.strip()
+        return v if v else None
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    # Dict/list inputs (e.g. {}) are treated as missing to avoid schema failures.
+    return None
+
+
+def _sanitize_summary_payload(raw: dict) -> dict:
+    warning_items = raw.get("warning_items")
+    if not isinstance(warning_items, list):
+        return raw
+
+    sanitized_items = []
+    for item in warning_items:
+        if not isinstance(item, dict):
+            continue
+        fixed = dict(item)
+        for key in ("sample", "group", "metric", "evidence", "message", "code", "severity", "type", "level"):
+            if key in fixed:
+                coerced = _coerce_optional_string(fixed.get(key))
+                if coerced is None and key in {"sample", "group", "metric", "evidence", "level"}:
+                    fixed[key] = None
+                elif coerced is not None:
+                    fixed[key] = coerced
+        sanitized_items.append(fixed)
+
+    raw["warning_items"] = sanitized_items
+    return raw
+
+
 def run_deseq2(
     job_dir: Path,
     formula: str,
@@ -71,5 +106,7 @@ def run_deseq2(
     # summary.json already checked above
     with open(summary_path) as f:
         raw = json.load(f)
+
+    raw = _sanitize_summary_payload(raw)
 
     return AnalysisSummary(**raw)

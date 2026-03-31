@@ -378,6 +378,7 @@ def compute_confidence_from_pipeline(
     summary_dict: dict[str, Any],
     qc_report: dict[str, Any] | None,
     realism_dict: dict[str, Any] | None,
+    ncrna_assessment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Adapter that maps existing pipeline outputs into confidence-score input schema."""
     qcr = qc_report or {}
@@ -419,7 +420,7 @@ def compute_confidence_from_pipeline(
         "top_gene_fraction": _extract_top_gene_fraction(realism_metrics_obj, realism_flags),
     }
 
-    return compute_confidence_score(
+    out = compute_confidence_score(
         n_samples=_safe_int(summary_dict.get("n_samples"), 0),
         groups=groups,
         qc_metrics=qc_metrics,
@@ -427,3 +428,18 @@ def compute_confidence_from_pipeline(
         realism_metrics=realism_metrics,
         realism_flags=realism_flags,
     )
+
+    # Optional ncRNA-aware explanatory hook (no score change).
+    ncrna = ncrna_assessment or {}
+    ncrna_qc = ncrna.get("qc_metrics") if isinstance(ncrna.get("qc_metrics"), dict) else {}
+    ncrna_warn = [str(x) for x in (ncrna.get("warnings", []) or []) if str(x).strip()]
+    ncrna_zero = _safe_float(ncrna_qc.get("ncrna_zero_fraction"), 0.0)
+    ncrna_low = _safe_float(ncrna_qc.get("ncrna_low_count_fraction"), 0.0)
+
+    if ncrna_zero > 0.8 or ncrna_low > 0.75 or ncrna_warn:
+        out["explanations"] = list(out.get("explanations", []))
+        extra = "ncRNA sparsity/low-count burden may reduce robustness of ncRNA-specific findings"
+        if extra not in out["explanations"]:
+            out["explanations"].append(extra)
+
+    return out

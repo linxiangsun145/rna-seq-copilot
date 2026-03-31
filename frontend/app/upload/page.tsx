@@ -26,8 +26,8 @@ function UploadPageInner() {
   const [loading, setLoading] = useState(false);
 
   // Design formula & contrast
-  const [formula, setFormula] = useState("~ condition");
-  const [contrastFactor, setContrastFactor] = useState("condition");
+  const [formula, setFormula] = useState("~ group");
+  const [contrastFactor, setContrastFactor] = useState("group");
   const [contrastNumerator, setContrastNumerator] = useState("");
   const [contrastDenominator, setContrastDenominator] = useState("");
 
@@ -166,9 +166,9 @@ function UploadPageInner() {
               value={formula}
               onChange={(e) => setFormula(e.target.value)}
               className="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-400"
-              placeholder="~ condition"
+              placeholder="~ group"
             />
-            <p className="text-xs text-gray-400">DESeq2 design formula, e.g. <code>~ condition</code></p>
+            <p className="text-xs text-gray-400">DESeq2 design formula, e.g. <code>~ group</code></p>
           </div>
 
           <div className="grid grid-cols-3 gap-3">

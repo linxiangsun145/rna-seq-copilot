@@ -17,7 +17,9 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from models.schemas import AnalysisSummary, LLMInterpretation
 from services.llm_client import evaluateInterpretationConfidence
-from services.confidence_score import inject_confidence_into_summary, render_confidence_section_html
+from services.confidence_score import render_confidence_section_html
+from services.ncrna_analysis import render_ncrna_section_html
+from services.statistical_guardrails import render_analysis_status_html
 from services.report_text_validator import build_analysis_snapshot, validate_report_text
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ def _load_top_genes_table(job_dir: Path, n: int = 20) -> list[dict[str, Any]]:
                 l2fc = _to_float(row.get("log2FoldChange"))
                 pvalue = _to_float(row.get("pvalue"))
                 padj = _to_float(row.get("padj"))
+                biotype = str(row.get("biotype", "unknown") or "unknown").strip().lower()
 
                 rows.append(
                     {
@@ -70,6 +73,7 @@ def _load_top_genes_table(job_dir: Path, n: int = 20) -> list[dict[str, Any]]:
                         "log2FoldChange": l2fc,
                         "pvalue": pvalue,
                         "padj": padj,
+                        "biotype": biotype,
                         "is_canonical": gene_upper in CANONICAL_GENES,
                         "is_housekeeping": gene_upper in HOUSEKEEPING_GENES,
                     }
@@ -157,66 +161,300 @@ def summarizeWarningsForSummary(
     }
 
 
-def generateExecutiveSummary(data: dict[str, Any]) -> str:
-    """Build a deterministic 3-4 sentence executive summary with metric-backed statements only."""
-    n_samples = int(data.get("n_samples", 0) or 0)
-    groups = [str(g) for g in (data.get("groups", []) or []) if str(g).strip()]
-    groups_text = ", ".join(groups) if groups else "unspecified groups"
+def _post_sanitize_executive_summary(summary: str, realism_status: str) -> str:
+    """Final post-generation sanitizer for executive summary realism consistency."""
+    text = str(summary or "").strip()
+    if not text:
+        return text
 
+    status = str(realism_status or "").strip().lower()
+    if status != "not_applicable":
+        return text
+
+    realism_note = "Realism fraction metrics were not evaluated due to insufficient DEG count."
+    leak_terms = ["canonical", "housekeeping", "fraction", "enrichment", "%", "expected ≤", "expected >", "expected <"]
+
+    # Split summary into sentence-like chunks for deterministic deletion/reinsertion.
+    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if str(s).strip()]
+
+    cleaned: list[str] = []
+    for s in raw_sentences:
+        low = s.lower()
+        if s == realism_note:
+            continue
+        if any(term.lower() in low for term in leak_terms):
+            continue
+        cleaned.append(s)
+
+    # Insert fixed realism note exactly once, after QC sentence if present.
+    qc_idx = next((i for i, s in enumerate(cleaned) if "qc status" in s.lower()), -1)
+    if qc_idx >= 0:
+        cleaned.insert(qc_idx + 1, realism_note)
+    else:
+        cleaned.append(realism_note)
+
+    out = " ".join(cleaned).strip()
+
+    # Strict postcondition assertions.
+    if out.count(realism_note) != 1:
+        raise ValueError("ExecutiveSummaryValidationError: realism fixed note must appear exactly once")
+    out_wo_note = out.replace(realism_note, "")
+    if any(token in out_wo_note.lower() for token in ["canonical", "housekeeping", "fraction", "enrichment", "expected ≤", "expected >", "expected <"]) or ("%" in out_wo_note):
+        raise ValueError("ExecutiveSummaryValidationError: forbidden realism tokens remain under not_applicable")
+
+    return out
+
+
+def generateExecutiveSummary(data: dict[str, Any]) -> str:
+    """Build a strict, state-driven Executive Summary with contradiction guards."""
+    n_samples = int(data.get("n_samples", 0) or 0)
     deg_up = int(data.get("deg_up", 0) or 0)
     deg_down = int(data.get("deg_down", 0) or 0)
     total_deg = deg_up + deg_down
-    pca_separation = str(data.get("pca_separation", "unknown")).strip() or "unknown"
+    pca_separation = str(data.get("pca_separation", "unknown") or "unknown")
 
-    qc_report = data.get("qc_report") if isinstance(data.get("qc_report"), dict) else {}
-    group_qc = (qc_report or {}).get("group_qc") if isinstance((qc_report or {}).get("group_qc"), dict) else {}
+    analysis_status = data.get("analysis_status") if isinstance(data.get("analysis_status"), dict) else {}
+    deg_status = str(analysis_status.get("deg_status", data.get("deg_status", "no_signal")) or "no_signal")
+    qc_status = str(analysis_status.get("qc_status", "warning") or "warning")
+    realism_status = str(analysis_status.get("realism_status", "high") or "high")
+    qc_warnings = [str(x) for x in (data.get("qc_warnings", []) or []) if str(x).strip()]
 
-    qc_sentence = "library-size ratio = 1.000 (threshold < 0.50)"
-    inconsistent_groups: list[tuple[str, dict[str, Any]]] = []
-    for g, obj in group_qc.items():
-        if isinstance(obj, dict) and str(obj.get("flag", "none")) == "group_inconsistency":
-            inconsistent_groups.append((str(g), obj))
-
-    if inconsistent_groups:
-        g_name, g_obj = inconsistent_groups[0]
-        g_mean = _to_metric_float(g_obj.get("mean_correlation"))
-        if g_mean is not None:
-            qc_sentence = f"mean correlation = {g_mean:.3f} (threshold < 0.75)"
-        else:
-            qc_sentence = "mean correlation = 0.000 (threshold < 0.75)"
+    # Priority 1 + 3: dataset overview and PCA (combined for zero-DEG length control)
+    if total_deg == 0:
+        sentences: list[str] = [f"The analysis included {n_samples} samples, and PCA separation was classified as {pca_separation}."]
     else:
-        lib = ((qc_report or {}).get("qc_metrics") or {}).get("library_size") if isinstance((qc_report or {}).get("qc_metrics"), dict) else {}
-        ratio = _to_metric_float((lib or {}).get("min_median_ratio")) if isinstance(lib, dict) else None
-        if ratio is not None:
-            qc_sentence = f"library-size ratio = {ratio:.3f} (threshold < 0.50)"
+        sentences = [f"The analysis included {n_samples} samples."]
 
-    realism_metrics = data.get("realism_metrics") if isinstance(data.get("realism_metrics"), dict) else {}
-    realism_level = str(data.get("realism_level", "LOW")).upper()
-    canonical_count = int(realism_metrics.get("canonical_count", 0) or 0)
-    total_deg_for_realism = int(realism_metrics.get("total_deg", 0) or 0)
-    canonical_fraction = float(realism_metrics.get("canonical_fraction", 0.0) or 0.0)
-    extreme_frac = float(realism_metrics.get("extreme_pvalue_fraction", 0.0) or 0.0)
+    # Priority 2: DEG result
+    if total_deg == 0:
+        sentences.append("Several genes showed statistically significant changes but did not meet the fold-change threshold.")
+        sentences.append("This discrepancy may reflect modest effect sizes rather than absence of biological signal.")
+    elif deg_status == "confirmed":
+        sentences.append(f"Confirmed differential-expression signal was detected ({deg_up} upregulated, {deg_down} downregulated).")
+    elif deg_status == "failed_detection":
+        sentences.append("DEG detection is likely compromised by technical limitations; differential-expression conclusions are not reliable.")
+    elif deg_status == "low_power":
+        sentences.append("No significant DEGs were detected under primary thresholds; interpretation is limited by statistical power.")
+    else:
+        sentences.append("No differential-expression evidence was detected under configured thresholds.")
 
-    realism_sentence = f"canonical fraction = {canonical_fraction:.3f} (threshold > 0.30)"
-    if total_deg_for_realism > 0:
-        realism_sentence = f"canonical fraction = {canonical_fraction:.3f} (threshold > 0.30)"
-    elif extreme_frac > 0:
-        realism_sentence = f"extreme p-value fraction = {extreme_frac:.3f} (threshold > 0.40)"
+    # Priority 3: PCA (already included above when total_deg == 0)
+    if total_deg != 0:
+        sentences.append(f"PCA separation was classified as {pca_separation}.")
 
-    confidence = data.get("confidence_assessment") if isinstance(data.get("confidence_assessment"), dict) else {}
-    confidence_score = int(confidence.get("confidence_score", 0) or 0)
-    confidence_level = str(confidence.get("confidence_level", "LOW") or "LOW").upper()
+    # Priority 4: QC limitation
+    if qc_status == "critical":
+        sentences.append(f"QC status is critical ({len(qc_warnings)} warning items reported).")
+    elif qc_status == "warning":
+        sentences.append(f"QC status is warning ({len(qc_warnings)} warning items reported).")
+    else:
+        sentences.append("QC status is pass.")
 
-    summary_text = " ".join(
-        [
-            f"The analysis included {n_samples} samples across {groups_text}, with {total_deg} DEGs ({deg_up} upregulated, {deg_down} downregulated).",
-            f"PCA separation was classified as {pca_separation}.",
-            f"QC issue: {qc_sentence}.",
-            f"Realism issue: {realism_sentence}; realism level = {realism_level}.",
-        ]
+    # Priority 5: realism (strict gating)
+    realism_note = "Realism fraction metrics were not evaluated due to insufficient DEG count."
+    if realism_status == "not_applicable":
+        realism_text = realism_note
+    else:
+        realism_text = f"Realism status is {realism_status}."
+    sentences.append(realism_text)
+
+    # Conflict prevention: remove impossible claims when deg_count==0.
+    if total_deg == 0:
+        forbidden = ["strong differential-expression", "confirmed differential-expression"]
+        sentences = [s for s in sentences if not any(tok in s.lower() for tok in forbidden)]
+
+    # Deduplicate while preserving order.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for s in sentences:
+        t = str(s).strip()
+        if not t:
+            continue
+        k = t.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(t)
+
+    # Hard-gate realism sentence occurrence to at most one.
+    if realism_status == "not_applicable":
+        deduped = [x for x in deduped if x != realism_note]
+        deduped.append(realism_note)
+
+    # Length control: 3-5 sentences.
+    if len(deduped) > 5:
+        deduped = deduped[:5]
+    if len(deduped) < 3:
+        deduped.append("Summary is constrained by available state signals.")
+        if len(deduped) < 3:
+            deduped.append("Interpretation should remain conservative.")
+
+    summary = " ".join(deduped)
+
+    # Final post-generation sanitizer must run after summary assembly and overrides prior text.
+    summary = _post_sanitize_executive_summary(summary, realism_status)
+
+    if total_deg == 0:
+        if "fold-change threshold" not in summary.lower() or "modest effect sizes" not in summary.lower():
+            raise ValueError("ExecutiveSummaryValidationError: zero-DEG effect-size explanation missing")
+
+    return summary
+
+
+def _strip_realism_ratio_claims(text: str) -> str:
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    parts = re.split(r"(?<=[.!?])\s+", raw)
+    filtered: list[str] = []
+    forbidden = [
+        "canonical fraction",
+        "housekeeping fraction",
+        "housekeeping genes:",
+        "canonical genes:",
+        "extreme p-value fraction",
+        "top5 contribution",
+        "realism score:",
+    ]
+    for p in parts:
+        s = str(p or "").strip()
+        if not s:
+            continue
+        low = s.lower()
+        if any(tok in low for tok in forbidden):
+            continue
+        filtered.append(s)
+    return " ".join(filtered).strip()
+
+
+def _enforce_final_state_consistency(
+    executive_summary: str,
+    assessment_basis: list[str],
+    interpretation_limitation_text: str,
+    llm_payload: Optional[dict[str, Any]],
+    analysis_status: dict[str, Any],
+    deg_status: str,
+    pca_separation: str,
+    total_deg: int,
+    confidence_assessment: dict[str, Any],
+) -> tuple[str, list[str], str, Optional[dict[str, Any]], dict[str, Any]]:
+    realism_status = str((analysis_status or {}).get("realism_status", "")).lower()
+    qc_status = str((analysis_status or {}).get("qc_status", "")).lower()
+
+    summary = str(executive_summary or "").strip()
+    basis = [str(x).strip() for x in (assessment_basis or []) if str(x).strip()]
+    limitation = str(interpretation_limitation_text or "").strip()
+    llm = dict(llm_payload) if isinstance(llm_payload, dict) else llm_payload
+    confidence = dict(confidence_assessment or {})
+
+    realism_note = "Realism fraction metrics were not evaluated due to insufficient DEG count."
+    effect_note = "Several genes showed statistically significant changes but did not meet the fold-change threshold."
+    discrepancy_note = "This discrepancy may reflect modest effect sizes rather than absence of biological signal."
+
+    if realism_status == "not_applicable":
+        summary = _strip_realism_ratio_claims(summary)
+        limitation = _strip_realism_ratio_claims(limitation)
+        basis = [_strip_realism_ratio_claims(x) for x in basis]
+        basis = [x for x in basis if x]
+        if llm is not None:
+            for key in ["pca_text", "deg_summary", "biological_insights", "data_quality", "next_steps"]:
+                llm[key] = _strip_realism_ratio_claims(str(llm.get(key, "")))
+        if realism_note.lower() not in summary.lower():
+            summary = (summary + " " + realism_note).strip()
+
+    if str(deg_status).lower() == "low_effect_size":
+        if "effect" not in summary.lower() or "fold-change" not in summary.lower():
+            summary = (summary + " " + effect_note).strip()
+
+    if total_deg == 0 and str(pca_separation or "").lower() == "clear":
+        if discrepancy_note.lower() not in summary.lower():
+            summary = (summary + " " + discrepancy_note).strip()
+
+    if qc_status == "critical":
+        if str(confidence.get("confidence_level", "")).upper() != "LOW":
+            confidence["confidence_level"] = "LOW"
+        score = int(confidence.get("confidence_score", 0) or 0)
+        if score > 49:
+            confidence["confidence_score"] = 49
+
+    return summary, basis, limitation, llm, confidence
+
+
+def _assert_executive_summary_realism_consistency(executive_summary: str, realism_status: str) -> None:
+    """Final hard assertion before rendering report HTML."""
+    if str(realism_status or "").lower() != "not_applicable":
+        return
+    text = str(executive_summary or "")
+    lowered = text.lower()
+    bad_keywords = ["canonical", "housekeeping", "fraction", "enrichment", "%"]
+    note = "Realism fraction metrics were not evaluated due to insufficient DEG count."
+    text_wo_note = text.replace(note, "")
+    lowered_wo_note = text_wo_note.lower()
+    if any(k in lowered_wo_note for k in bad_keywords):
+        raise ValueError(
+            "ExecutiveSummaryValidationError: realism_status=not_applicable but realism ratio keywords remain in executive_summary"
+        )
+
+
+def _build_state_messages(
+    n_samples: int,
+    qc_status: str,
+    deg_status: str,
+    realism_status: str,
+    qc_warnings: list[str],
+) -> dict[str, str]:
+    qc_msg = {
+        "critical": "QC section: critical technical risk is present.",
+        "warning": "QC section: warning-level technical risk is present.",
+        "pass": "QC section: no status-level QC risk detected.",
+    }.get(qc_status, f"QC section: status = {qc_status}.")
+
+    realism_msg = (
+        "Realism section: Realism fraction metrics were not evaluated due to insufficient DEG count."
+        if realism_status == "not_applicable"
+        else f"Realism section: status = {realism_status}."
     )
 
-    return inject_confidence_into_summary(summary_text, confidence)
+    interp_msg = _build_interpretation_limitation(
+        n_samples=n_samples,
+        qc_status=qc_status,
+        deg_status=deg_status,
+        realism_status=realism_status,
+        qc_warnings=qc_warnings,
+    )
+
+    return {
+        "qc": qc_msg,
+        "realism": realism_msg,
+        "interpretation": interp_msg,
+    }
+
+
+def _validate_state_render_consistency(
+    html: str,
+    analysis_status: dict[str, Any],
+    deg_status: str,
+    confidence_assessment: dict[str, Any],
+    executive_summary: str,
+) -> None:
+    realism_status = str((analysis_status or {}).get("realism_status", "")).lower()
+    if realism_status == "not_applicable":
+        forbidden = ["Canonical genes:", "Housekeeping genes:", "Extreme p-values (<1e-6):"]
+        if any(token in html for token in forbidden):
+            raise ValueError("RenderValidationError: realism ratios must not appear when realism_status=not_applicable")
+
+    if str(deg_status).lower() == "low_power":
+        if "statistical power" not in str(executive_summary or "").lower():
+            raise ValueError("RenderValidationError: low_power summary must mention statistical power limitation")
+
+    if str(deg_status).lower() == "low_effect_size":
+        if "fold-change" not in str(executive_summary or "").lower() and "effect size" not in str(executive_summary or "").lower():
+            raise ValueError("RenderValidationError: low_effect_size summary must mention effect-size limitation")
+
+    qc_status = str((analysis_status or {}).get("qc_status", "")).lower()
+    conf_level = str((confidence_assessment or {}).get("confidence_level", "")).upper()
+    if qc_status == "critical" and conf_level != "LOW":
+        raise ValueError("RenderValidationError: qc_status=critical requires confidence_level=LOW")
 
 
 def _normalize_placeholder_text(value: Any) -> str:
@@ -891,6 +1129,7 @@ def formatTopGenes(top_genes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         log2fc = _to_metric_float(row.get("log2FoldChange"))
         padj = _to_metric_float(row.get("padj"))
         pvalue = _to_metric_float(row.get("pvalue"))
+        biotype = str(row.get("biotype", "unknown") or "unknown").strip().lower()
 
         if log2fc is None:
             direction = "Neutral"
@@ -913,6 +1152,11 @@ def formatTopGenes(top_genes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if _has_tag(row, "housekeeping") and "housekeeping" not in tags:
             tags.append("housekeeping")
 
+        if biotype and biotype != "unknown":
+            biotag = biotype.replace("_", "-")
+            if biotag not in tags:
+                tags.append(biotag)
+
         normalized.append(
             {
                 "gene": gene,
@@ -922,6 +1166,7 @@ def formatTopGenes(top_genes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "log2fc": f"{log2fc:.3f}" if log2fc is not None else "NA",
                 "padj": f"{padj:.2e}" if padj is not None else (f"{pvalue:.2e}" if pvalue is not None else "NA"),
                 "direction": direction,
+                "biotype": biotype,
                 "tags": tags,
             }
         )
@@ -1004,25 +1249,36 @@ def _build_realism_evidence_lines(metrics: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _build_interpretation_limitation(qc_report: Optional[dict[str, Any]], n_samples: int) -> str:
-    group_qc = (qc_report or {}).get("group_qc") if isinstance((qc_report or {}).get("group_qc"), dict) else {}
-    for g_name, g_obj in sorted((group_qc or {}).items(), key=lambda x: str(x[0]).lower()):
-        if not isinstance(g_obj, dict):
-            continue
-        if str(g_obj.get("flag", "")) != "group_inconsistency":
-            continue
-        g_mean = _to_metric_float(g_obj.get("mean_correlation"))
-        if g_mean is not None:
-            return (
-                f"Interpretation limitation: mean correlation = {g_mean:.3f} "
-                f"(threshold < 0.75) in {str(g_name).title()} group."
-            )
-        return f"Interpretation limitation: mean correlation = 0.000 (threshold < 0.75) in {str(g_name).title()} group."
+def _build_interpretation_limitation(
+    n_samples: int,
+    qc_status: str,
+    deg_status: str,
+    realism_status: str,
+    qc_warnings: list[str],
+) -> str:
+    parts: list[str] = [f"Interpretation context: sample size = {n_samples}."]
 
-    if n_samples < 6:
-        return f"Interpretation limitation: sample size = {n_samples} (threshold >= 6)."
+    if qc_status == "critical":
+        parts.append("Technical QC risk is critical and may dominate interpretation uncertainty.")
+    elif qc_status == "warning":
+        parts.append("QC warnings are present and require cautious interpretation.")
+    else:
+        parts.append("QC risk is low at the status level.")
 
-    return f"Interpretation limitation: sample size = {n_samples} (threshold >= 6)."
+    if deg_status == "low_power":
+        parts.append("Differential-expression interpretation is limited by statistical power.")
+    elif deg_status == "failed_detection":
+        parts.append("Differential-expression detection is likely unreliable due to technical limitations.")
+    elif deg_status == "no_signal":
+        parts.append("No differential-expression evidence was detected under the configured thresholds.")
+
+    if realism_status == "not_applicable":
+        parts.append("Realism fraction metrics were not evaluated due to insufficient DEG count.")
+
+    if qc_warnings:
+        parts.append(f"QC warning items reported: {len(qc_warnings)}.")
+
+    return " ".join(parts)
 
 
 def _normalize_realism_level(value: str) -> str:
@@ -1046,6 +1302,8 @@ def _build_shared_realism_result(realism: dict[str, Any]) -> dict[str, Any]:
     canonical_fraction = float(metrics.get("canonical_fraction_top20", 0.0) or 0.0)
     housekeeping_count = int(metrics.get("housekeeping_genes_in_top20", 0) or 0)
     extreme_pvalue_fraction = float(metrics.get("fraction_p_lt_1e6", 0.0) or 0.0)
+    realism_status = str((realism or {}).get("realism_status", "stable") or "stable")
+    gating_note = str((realism or {}).get("gating_note", "") or "").strip()
 
     # Keep score deterministic and bounded while reflecting severity and metric extremes.
     score = 0.0
@@ -1060,9 +1318,11 @@ def _build_shared_realism_result(realism: dict[str, Any]) -> dict[str, Any]:
     score = max(0.0, min(100.0, score))
 
     level_from_metrics = "HIGH" if (critical or len(warnings) >= 4) else ("MEDIUM" if len(warnings) >= 2 else "LOW")
+    if realism_status in {"not_applicable", "unstable"}:
+        level_from_metrics = "LOW"
 
     supplied_overall = str((realism or {}).get("overall_suspicion", "")).strip()
-    if supplied_overall:
+    if supplied_overall and realism_status == "stable":
         level_from_overall = _normalize_realism_level(supplied_overall)
         if level_from_overall != level_from_metrics:
             raise ValueError(
@@ -1074,10 +1334,14 @@ def _build_shared_realism_result(realism: dict[str, Any]) -> dict[str, Any]:
         canonical_level = level_from_metrics
 
     reasons: list[str] = []
+    if gating_note:
+        reasons.append(gating_note)
     reasons.extend([f"Critical: {x}" for x in critical])
     reasons.extend([f"Warning: {x}" for x in warnings])
 
     return {
+        "realism_status": realism_status,
+        "gating_note": gating_note,
         "level": canonical_level,
         "score": round(score, 1),
         "reasons": reasons,
@@ -1599,6 +1863,13 @@ def build_report(
             qc_report = None
 
     realism = summary_data.get("realism_validation") or {}
+    analysis_status = summary_data.get("analysis_status") if isinstance(summary_data.get("analysis_status"), dict) else {}
+    analysis_status_view = render_analysis_status_html(analysis_status)
+    deg_status = str(summary_data.get("deg_status", analysis_status_view.get("deg_status", "no_signal")) or "no_signal")
+    exploratory_deg_candidates = summary_data.get("exploratory_deg_candidates") if isinstance(summary_data.get("exploratory_deg_candidates"), list) else []
+    sparse_ncrna_metrics = summary_data.get("sparse_ncrna_metrics") if isinstance(summary_data.get("sparse_ncrna_metrics"), dict) else {}
+    ncrna_assessment = summary_data.get("ncrna_assessment") if isinstance(summary_data.get("ncrna_assessment"), dict) else {}
+    ncrna_section = render_ncrna_section_html(ncrna_assessment)
     top_genes_table = _load_top_genes_table(job_dir, n=20)
     top_genes_display = formatTopGenes(top_genes_table)
 
@@ -1626,10 +1897,20 @@ def build_report(
     results_paragraph = (
         f"The analysis included {summary_data.get('n_samples', 0)} samples across groups: {', '.join(groups) if groups else 'not provided'}. "
         f"Differential testing identified {summary_data.get('deg_up', 0)} upregulated and {summary_data.get('deg_down', 0)} downregulated genes. "
+        f"DEG status was classified as '{deg_status}'. "
         f"PCA separation was classified as '{summary_data.get('pca_separation', 'unknown')}'. "
         f"Overall data quality risk was assessed as '{_overall_data_quality(qc_report)}', and realism suspicion was "
         f"'{shared_realism_result.get('level', 'LOW').lower()}'."
     )
+
+    if analysis_status_view.get("realism_status") == "not_applicable":
+        results_paragraph += " Realism fraction-based metrics were suppressed because DEG count was insufficient for stable ratio analysis."
+    if deg_status == "low_effect_size":
+        results_paragraph += " Several genes met statistical significance but remained below the fold-change cutoff."
+    if deg_status == "low_power":
+        results_paragraph += " Exploratory DEG candidates were retained as low-confidence, hypothesis-generating signals."
+    if deg_status == "failed_detection":
+        results_paragraph += " Technical reliability concerns limit DEG detectability and downstream interpretation."
 
     figure_legends = [
         {
@@ -1701,12 +1982,8 @@ def build_report(
             f"unmapped realism flags = {unmatched_count} (threshold > 0)."
         )
 
-    interpretation_qc_warnings = [
-        f"{w.get('severity', 'warning')}: {w.get('message', '')}" for w in all_warning_items if w.get("type") == "qc"
-    ]
-    interpretation_realism_flags = [
-        str(w.get("message", "")) for w in all_warning_items if w.get("type") == "realism" and str(w.get("message", "")).strip()
-    ]
+    interpretation_qc_warnings = [str(x) for x in ((qc_report or {}).get("qc_warnings", []) or []) if str(x).strip()]
+    interpretation_realism_flags: list[str] = []
     interpretation_confidence = evaluateInterpretationConfidence(
         qc_warnings=interpretation_qc_warnings,
         realism_flags=interpretation_realism_flags,
@@ -1717,61 +1994,17 @@ def build_report(
     confidence_section = render_confidence_section_html(confidence_assessment)
     confidence_score = int(confidence_assessment.get("confidence_score", 0) or 0)
     confidence_level = str(confidence_assessment.get("confidence_level", "LOW") or "LOW").upper()
-    base_reasons: list[str] = [f"sample size = {n_samples} (threshold >= 6)."]
-    base_reasons.append(f"confidence score = {confidence_score} (range 0-100); level = {confidence_level}.")
-    confidence_explanation_text = str(confidence_assessment.get("confidence_explanation", "") or "").strip()
-    if confidence_explanation_text:
-        base_reasons.append(confidence_explanation_text if confidence_explanation_text.endswith(".") else f"{confidence_explanation_text}.")
-
-    # Pull one quantitative QC and one quantitative realism sentence from assessment bullets.
-    qc_candidate: Optional[str] = None
-    qc_priority = ["group-size ratio", "library-size ratio", "zero fraction", "mean correlation"]
-    for key in qc_priority:
-        for sentence in assessment_basis:
-            s = _cleanup_assessment_text(sentence)
-            if not _is_required_metric_statement(s):
-                continue
-            if key in s.lower():
-                qc_candidate = s if s.endswith(".") else f"{s}."
-                break
-        if qc_candidate:
-            break
-    if qc_candidate:
-        base_reasons.append(qc_candidate)
-    for sentence in assessment_basis:
-        s = _cleanup_assessment_text(sentence)
-        if _is_required_metric_statement(s):
-            sl = s.lower()
-            if any(k in sl for k in ["canonical fraction", "top5 contribution", "housekeeping genes", "extreme p-value fraction", "fraction ="]):
-                base_reasons.append(s if s.endswith(".") else f"{s}.")
-                break
-
-    group_qc = (qc_report or {}).get("group_qc") if isinstance((qc_report or {}).get("group_qc"), dict) else {}
-    for g_name, g_obj in sorted((group_qc or {}).items(), key=lambda x: str(x[0]).lower()):
-        if not isinstance(g_obj, dict):
-            continue
-        g_mean = _to_metric_float(g_obj.get("mean_correlation"))
-        if g_mean is None:
-            continue
-        base_reasons.append(
-            f"{str(g_name).title()} group mean correlation = {g_mean:.3f} (threshold < 0.75)."
-        )
-
-    deduped_reasons: list[str] = []
-    seen_reasons: set[str] = set()
-    for reason in base_reasons:
-        if reason in seen_reasons:
-            continue
-        seen_reasons.add(reason)
-        deduped_reasons.append(reason)
-    interpretation_confidence["reasons"] = deduped_reasons
-
-    interpretation_limitation_text = _build_interpretation_limitation(qc_report, n_samples)
-    interpretation_limitation_text = (
-        f"{interpretation_limitation_text} Confidence score = {confidence_score}/100 ({confidence_level})."
-    ).strip()
-    if confidence_explanation_text:
-        interpretation_limitation_text = f"{interpretation_limitation_text} {confidence_explanation_text}".strip()
+    qc_status = str(analysis_status_view.get("qc_status", "warning") or "warning")
+    realism_status = str(analysis_status_view.get("realism_status", "high") or "high")
+    state_messages = _build_state_messages(
+        n_samples=n_samples,
+        qc_status=qc_status,
+        deg_status=deg_status,
+        realism_status=realism_status,
+        qc_warnings=interpretation_qc_warnings,
+    )
+    interpretation_confidence["reasons"] = [state_messages["interpretation"]]
+    interpretation_limitation_text = state_messages["interpretation"]
     executive_summary = generateExecutiveSummary(
         {
             "n_samples": summary_data.get("n_samples", 0),
@@ -1786,6 +2019,11 @@ def build_report(
             "realism_level": shared_realism_result.get("level", "LOW"),
             "warning_items": all_warning_items,
             "confidence_assessment": confidence_assessment,
+            "ncrna_assessment": ncrna_assessment,
+            "analysis_status": analysis_status_view,
+            "deg_status": deg_status,
+            "near_sig_genes": summary_data.get("near_sig_genes", 0),
+            "exploratory_deg_candidates": exploratory_deg_candidates,
         }
     )
 
@@ -1804,6 +2042,9 @@ def build_report(
         realism_metrics=realism_metrics,
         realism_level=shared_realism_result.get("level", "LOW"),
         confidence_assessment=confidence_assessment,
+        ncrna_assessment=ncrna_assessment,
+        analysis_status=analysis_status_view,
+        deg_status=deg_status,
     )
 
     validated_text = validate_report_text(
@@ -1829,6 +2070,24 @@ def build_report(
         llm_payload["data_quality"] = ""
         llm_payload["next_steps"] = str(validated_ai.get("recommendations", llm_payload.get("next_steps", "")))
 
+    executive_summary, assessment_basis, interpretation_limitation_text, llm_payload, confidence_assessment = _enforce_final_state_consistency(
+        executive_summary=executive_summary,
+        assessment_basis=assessment_basis,
+        interpretation_limitation_text=interpretation_limitation_text,
+        llm_payload=llm_payload,
+        analysis_status=analysis_status_view,
+        deg_status=deg_status,
+        pca_separation=str(summary_data.get("pca_separation", "unknown")),
+        total_deg=int(summary_data.get("deg_up", 0) or 0) + int(summary_data.get("deg_down", 0) or 0),
+        confidence_assessment=confidence_assessment,
+    )
+
+    # Final safety gate: sanitize/override on the final rendered summary string.
+    executive_summary = _post_sanitize_executive_summary(executive_summary, realism_status)
+    _assert_executive_summary_realism_consistency(executive_summary, realism_status)
+
+    confidence_section = render_confidence_section_html(confidence_assessment)
+
     html = template.render(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         summary=summary_data,
@@ -1846,6 +2105,10 @@ def build_report(
         realism_flag_map=realism_flag_map,
         interpretation_confidence=interpretation_confidence,
         interpretation_limitation_text=interpretation_limitation_text,
+        qc_section_text=state_messages["qc"],
+        realism_section_text=state_messages["realism"],
+        qc_status=qc_status,
+        realism_status=realism_status,
         executive_summary=executive_summary,
         validation_log=validated_text.get("validation_log", []),
         analysis_methods=analysis_methods,
@@ -1856,9 +2119,22 @@ def build_report(
         overall_realism=shared_realism_result.get("level", "LOW"),
         confidence_assessment=confidence_assessment,
         confidence_section=confidence_section,
+        analysis_status=analysis_status_view,
+        deg_status=deg_status,
+        exploratory_deg_candidates=exploratory_deg_candidates,
+        sparse_ncrna_metrics=sparse_ncrna_metrics,
+        ncrna_section=ncrna_section,
         llm=llm_payload,
         plots=plots,
         job_id=job_dir.name,
+    )
+
+    _validate_state_render_consistency(
+        html=html,
+        analysis_status=analysis_status_view,
+        deg_status=deg_status,
+        confidence_assessment=confidence_assessment,
+        executive_summary=executive_summary,
     )
 
     out = job_dir / "report.html"

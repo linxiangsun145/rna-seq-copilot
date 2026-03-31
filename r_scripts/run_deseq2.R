@@ -110,18 +110,54 @@ keep <- rowSums(counts(dds)) >= 10
 dds  <- dds[keep, ]
 cat(sprintf("[DESeq2] After low-count filter: %d genes remain\n", sum(keep)))
 
-# ── Run DESeq2 ────────────────────────────────────────────────────────────────
-dds  <- DESeq(dds)
-res  <- results(dds,
-                contrast = c(contrast_factor, contrast_num, contrast_denom),
-                alpha    = 0.05)
+# ── Run DESeq2 (robust fitType fallback) ─────────────────────────────────────
+fit_candidates <- c("parametric", "local", "mean")
+dds_ok <- NULL
+fit_used <- NULL
+last_err <- NULL
+
+for (ft in fit_candidates) {
+  cat(sprintf("[DESeq2] Trying fitType='%s'...\n", ft))
+  attempt <- tryCatch(
+    {
+      DESeq(dds, fitType = ft)
+    },
+    error = function(e) {
+      last_err <<- e$message
+      NULL
+    }
+  )
+
+  if (!is.null(attempt)) {
+    dds_ok <- attempt
+    fit_used <- ft
+    cat(sprintf("[DESeq2] fitType='%s' succeeded\n", ft))
+    break
+  }
+
+  cat(sprintf("[DESeq2] fitType='%s' failed: %s\n", ft, last_err))
+}
+
+if (is.null(dds_ok)) {
+  stop(sprintf(
+    "DESeq2 failed for all fitType candidates (%s). Last error: %s",
+    paste(fit_candidates, collapse = ", "),
+    ifelse(is.null(last_err), "unknown", last_err)
+  ))
+}
+
+dds <- dds_ok
+res <- results(dds,
+               contrast = c(contrast_factor, contrast_num, contrast_denom),
+               alpha    = 0.05)
 res  <- lfcShrink(dds,
                   contrast = c(contrast_factor, contrast_num, contrast_denom),
                   res      = res,
                   type     = if (requireNamespace("ashr", quietly = TRUE)) "ashr" else "normal")
 
-cat(sprintf("[DESeq2] %d significant DEGs (padj < 0.05)\n",
-            sum(!is.na(res$padj) & res$padj < 0.05)))
+cat(sprintf("[DESeq2] %d significant DEGs (padj < 0.05), fitType=%s\n",
+            sum(!is.na(res$padj) & res$padj < 0.05),
+            fit_used))
 
 # ── Save DEG results CSV ───────────────────────────────────────────────────────
 res_df <- as.data.frame(res)

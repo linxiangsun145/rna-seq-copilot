@@ -56,14 +56,19 @@ build_summary <- function(dds, res_df, vsd, meta, contrast, group_col) {
 
   warning_items <- list()
   .add_stat_warning <- function(severity, code, message, sample = NULL, metric = NULL) {
-    warning_items[[length(warning_items) + 1]] <<- list(
+    entry <- list(
       type = "statistical",
       severity = severity,
       code = code,
-      message = message,
-      sample = sample,
-      metric = metric
+      message = message
     )
+    if (!is.null(sample) && length(sample) > 0 && !all(is.na(sample))) {
+      entry$sample <- as.character(sample)[1]
+    }
+    if (!is.null(metric) && length(metric) > 0 && !all(is.na(metric))) {
+      entry$metric <- as.character(metric)[1]
+    }
+    warning_items[[length(warning_items) + 1]] <<- entry
   }
 
   if (deg_up + deg_down == 0) {

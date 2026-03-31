@@ -670,6 +670,18 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
     cat(sprintf("[QC][WARN] Sanity check triggered: %d/%d samples flagged by correlation\n", length(unique(corr_flagged_samples)), length(sample_names)))
   }
 
+  global_mean_within_group_corr <- as.numeric(mean(unlist(within_group_corr), na.rm = TRUE))
+  if (is.finite(global_mean_within_group_corr) && global_mean_within_group_corr < 0) {
+    .add_warning(
+      "critical",
+      "negative_mean_within_group_correlation",
+      "Correlation computation or data structure may be problematic.",
+      metric = "mean_within_group_correlation",
+      level = "global",
+      evidence = sprintf("global mean within-group correlation = %.3f (< 0)", global_mean_within_group_corr)
+    )
+  }
+
   control_groups <- names(grp_tbl)[grepl("(^|[^A-Za-z0-9])(control|ctrl)([^A-Za-z0-9]|$)", names(grp_tbl), ignore.case = TRUE)]
   if (length(control_groups) > 0) {
     control_samples <- sample_names[grp %in% control_groups]
@@ -797,7 +809,7 @@ run_qc <- function(dds, vsd, counts_mat, meta, contrast_factor, res_df,
       min_median_ratio = as.numeric(min(lib_sizes) / median(lib_sizes))
     ),
     correlation = list(
-      mean_within_group = as.numeric(mean(unlist(within_group_corr), na.rm = TRUE))
+      mean_within_group = global_mean_within_group_corr
     ),
     zero_fraction = list(
       mean = as.numeric(mean(zero_fraction, na.rm = TRUE))

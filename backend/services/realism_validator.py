@@ -142,40 +142,57 @@ def validate_realism(job_dir: Path, summary_dict: dict[str, Any]) -> RealismVali
 
     deg = df[df["padj"].notna() & (df["padj"] < 0.05)].copy()
     total_deg = int(deg.shape[0])
+    low_deg_realism_unstable = total_deg < 10
+    realism_status = "stable"
+    gated_metrics: list[str] = []
+    gating_note = ""
+    if low_deg_realism_unstable:
+        realism_status = "not_applicable"
+        gated_metrics = [
+            "canonical_fraction_top20",
+            "housekeeping_genes_in_top20",
+            "top_gene_dominance",
+        ]
+        gating_note = "Realism fraction metrics were not evaluated due to insufficient DEG count."
+        warnings.append(gating_note)
 
-    # 1) Canonical overrepresentation
-    canonical_in_top20 = int(top20["gene_upper"].isin(CANONICAL_GENES).sum())
-    canonical_fraction_top20 = _safe_fraction(canonical_in_top20, 20)
-    if canonical_in_top20 >= 7:
-        msg = (
-            f"Canonical gene overrepresentation is critical: {canonical_in_top20}/20 canonical genes in top 20 "
-            f"(threshold >= 7)."
-        )
-        critical.append(msg)
-        realism_flags.append("canonical_top20_critical")
-        suspicious_patterns.append(msg)
-    elif canonical_in_top20 >= 4:
-        msg = (
-            f"Canonical gene overrepresentation warning: {canonical_in_top20}/20 canonical genes in top 20 "
-            f"(threshold >= 4)."
-        )
-        warnings.append(msg)
-        realism_flags.append("canonical_top20_warning")
-        suspicious_patterns.append(msg)
+    # 1) Canonical/housekeeping ratios are gated when DEG count is too low for stable fraction inference.
+    canonical_in_top20 = 0
+    canonical_fraction_top20 = 0.0
+    hk_count = 0
+    if not low_deg_realism_unstable:
+        canonical_in_top20 = int(top20["gene_upper"].isin(CANONICAL_GENES).sum())
+        canonical_fraction_top20 = _safe_fraction(canonical_in_top20, 20)
+        hk_top20 = top20[top20["gene_upper"].isin(HOUSEKEEPING_GENES)]
+        hk_count = int(hk_top20.shape[0])
 
-    # 2) Housekeeping genes in top20
-    hk_top20 = top20[top20["gene_upper"].isin(HOUSEKEEPING_GENES)]
-    hk_count = int(hk_top20.shape[0])
-    if hk_count >= 2:
-        msg = f"Housekeeping gene signal is critical: {hk_count} housekeeping genes in top 20 (threshold >= 2)."
-        critical.append(msg)
-        realism_flags.append("housekeeping_top20_critical")
-        suspicious_patterns.append(msg)
-    elif hk_count >= 1:
-        msg = f"Housekeeping gene warning: {hk_count} housekeeping gene in top 20 (threshold >= 1)."
-        warnings.append(msg)
-        realism_flags.append("housekeeping_top20_warning")
-        suspicious_patterns.append(msg)
+        if canonical_in_top20 >= 7:
+            msg = (
+                f"Canonical gene overrepresentation is critical: {canonical_in_top20}/20 canonical genes in top 20 "
+                f"(threshold >= 7)."
+            )
+            critical.append(msg)
+            realism_flags.append("canonical_top20_critical")
+            suspicious_patterns.append(msg)
+        elif canonical_in_top20 >= 4:
+            msg = (
+                f"Canonical gene overrepresentation warning: {canonical_in_top20}/20 canonical genes in top 20 "
+                f"(threshold >= 4)."
+            )
+            warnings.append(msg)
+            realism_flags.append("canonical_top20_warning")
+            suspicious_patterns.append(msg)
+
+        if hk_count >= 2:
+            msg = f"Housekeeping gene signal is critical: {hk_count} housekeeping genes in top 20 (threshold >= 2)."
+            critical.append(msg)
+            realism_flags.append("housekeeping_top20_critical")
+            suspicious_patterns.append(msg)
+        elif hk_count >= 1:
+            msg = f"Housekeeping gene warning: {hk_count} housekeeping gene in top 20 (threshold >= 1)."
+            warnings.append(msg)
+            realism_flags.append("housekeeping_top20_warning")
+            suspicious_patterns.append(msg)
 
     hk_strong = deg[
         deg["gene_upper"].isin(HOUSEKEEPING_GENES)
@@ -311,7 +328,7 @@ def validate_realism(job_dir: Path, summary_dict: dict[str, Any]) -> RealismVali
             suspicious_patterns.append(msg)
 
     marker_in_top5 = int(top5["gene_upper"].isin(MARKER_GENES).sum())
-    if marker_in_top5 >= 3:
+    if (not low_deg_realism_unstable) and marker_in_top5 >= 3:
         msg = (
             "Top-gene dominance warning: top 5 genes are dominated by known marker/canonical genes "
             f"({marker_in_top5}/5 in marker set, threshold >= 3)."
@@ -415,4 +432,7 @@ def validate_realism(job_dir: Path, summary_dict: dict[str, Any]) -> RealismVali
         warning_items=warning_items,
         metrics=metrics,
         overall_suspicion=overall,
+        realism_status=realism_status,
+        gated_metrics=gated_metrics,
+        gating_note=gating_note,
     )

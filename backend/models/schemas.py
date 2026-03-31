@@ -74,6 +74,13 @@ class AnalysisSummary(BaseModel):
     warning_items: List["WarningItem"] = []
     realism_validation: Optional["RealismValidation"] = None
     confidence_assessment: Optional["ConfidenceAssessment"] = None
+    ncrna_assessment: Optional["NcRNAAssessment"] = None
+    deg_status: str = "no_signal"
+    near_sig_genes: int = 0
+    exploratory_deg_candidates: List["ExploratoryDEGCandidate"] = []
+    sparse_ncrna_metrics: Optional["SparseNcRNAMetrics"] = None
+    analysis_status: Optional["AnalysisStatus"] = None
+    statistical_validation: List[str] = []
 
 
 class ConfidencePenaltyBreakdown(BaseModel):
@@ -91,6 +98,69 @@ class ConfidenceAssessment(BaseModel):
     confidence_explanation: str = ""
     confidence_penalty_explanations: Dict[str, List[str]] = {}
     confidence_validation: List[str] = []
+
+
+class NcRNASummaryMetrics(BaseModel):
+    n_total_deg: int = 0
+    n_ncrna_deg: int = 0
+    n_lncRNA_deg: int = 0
+    n_miRNA_deg: int = 0
+    n_protein_coding_deg: int = 0
+    n_unknown_biotype_deg: int = 0
+    n_circRNA_deg: int = 0
+    n_other_ncRNA_deg: int = 0
+    ncrna_fraction_deg: float = 0.0
+    lncRNA_fraction_deg: float = 0.0
+    miRNA_fraction_deg: float = 0.0
+
+
+class NcRNAQCMetrics(BaseModel):
+    ncrna_zero_fraction: float = 0.0
+    ncrna_low_count_fraction: float = 0.0
+    lncrna_low_count_fraction: float = 0.0
+    miRNA_detected_count: int = 0
+    lncRNA_detected_count: int = 0
+    n_ncrna_features: int = 0
+
+
+class NcRNACandidate(BaseModel):
+    gene: str
+    biotype: str
+    priority_score: float
+    padj: float
+    abs_log2fc: float
+
+
+class NcRNAAssessment(BaseModel):
+    summary_metrics: NcRNASummaryMetrics = NcRNASummaryMetrics()
+    qc_metrics: NcRNAQCMetrics = NcRNAQCMetrics()
+    warnings: List[str] = []
+    top_candidates: List[NcRNACandidate] = []
+
+
+class ExploratoryDEGCandidate(BaseModel):
+    gene: str
+    log2fc: float
+    padj: float
+    pvalue: float
+    rank_score: float
+    label: str = "low-confidence DEG candidate"
+
+
+class SparseNcRNAMetrics(BaseModel):
+    zero_fraction_global: float = 0.0
+    zero_fraction_ncrna: float = 0.0
+    low_count_fraction_ncrna: float = 0.0
+    detected_miRNA_count: int = 0
+    detected_lncRNA_count: int = 0
+    dataset_label: str = "ncRNA-rich dataset"
+    warnings: List[str] = []
+
+
+class AnalysisStatus(BaseModel):
+    qc_status: str = "warning"  # pass | warning | critical
+    deg_status: str = "no_signal"  # confirmed | low_effect_size | low_power | no_signal | failed_detection
+    realism_status: str = "unstable"  # stable | unstable | not_applicable
 
 
 class WarningItem(BaseModel):
@@ -126,6 +196,9 @@ class RealismValidation(BaseModel):
     warning_items: List[WarningItem] = []
     metrics: RealismMetrics
     overall_suspicion: str  # low | moderate | high
+    realism_status: str = "stable"
+    gated_metrics: List[str] = []
+    gating_note: str = ""
 
 
 class GroupBalance(BaseModel):

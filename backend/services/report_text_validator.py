@@ -1172,6 +1172,9 @@ def build_analysis_snapshot(
     realism_metrics: dict[str, Any],
     realism_level: str,
     confidence_assessment: dict[str, Any] | None = None,
+    ncrna_assessment: dict[str, Any] | None = None,
+    analysis_status: dict[str, Any] | None = None,
+    deg_status: str | None = None,
 ) -> dict[str, Any]:
     """Create a deterministic analysis snapshot consumed by the text validator."""
     return {
@@ -1184,5 +1187,8 @@ def build_analysis_snapshot(
         "qc_report": qc_report or {},
         "realism_metrics": realism_metrics or {},
         "realism_level": str(realism_level or "LOW").upper(),
+        "analysis_status": analysis_status or {},
+        "deg_status": deg_status or "",
         "confidence_assessment": confidence_assessment or {},
+        "ncrna_assessment": ncrna_assessment or {},
     }

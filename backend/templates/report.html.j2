@@ -241,6 +241,18 @@
           <div class="card-label">PCA Separation</div>
           <div class="card-value" style="text-transform: capitalize;">{{ summary.pca_separation }}</div>
         </div>
+        <div class="card">
+          <div class="card-label">QC Status</div>
+          <div class="card-value" style="text-transform: capitalize;">{{ analysis_status.qc_status if analysis_status else 'warning' }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">DEG Status</div>
+          <div class="card-value" style="text-transform: capitalize;">{{ deg_status if deg_status else 'no_signal' }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Realism Status</div>
+          <div class="card-value" style="text-transform: capitalize;">{{ analysis_status.realism_status if analysis_status else 'unstable' }}</div>
+        </div>
       </div>
     </div>
 
@@ -432,15 +444,15 @@
 
     <div class="section">
       <h2>4. QC Warnings (Severity)</h2>
-      {% set qc_items = warning_groups.qc if warning_groups else [] %}
-      {% if qc_items and qc_items|length > 0 %}
-        {% for item in qc_items %}
-          <div class="box {% if item.level == 'critical' %}box-critical{% else %}box-warning{% endif %}">
-            <strong>{{ item.level|upper }}</strong>: {{ item.message }}{% if item.evidence %} ({{ item.evidence }}){% endif %}
-          </div>
+      <div class="box {% if qc_status == 'critical' %}box-critical{% elif qc_status == 'warning' %}box-warning{% else %}box-ok{% endif %}">
+        {{ qc_section_text }}
+      </div>
+      {% if qc and qc.qc_warnings and qc.qc_warnings|length > 0 %}
+        {% for item in qc.qc_warnings %}
+          <div class="box box-warning">{{ item }}</div>
         {% endfor %}
       {% else %}
-        <div class="box box-ok">No issues detected.</div>
+        <div class="box box-ok">No QC warning text reported.</div>
       {% endif %}
     </div>
 
@@ -449,8 +461,47 @@
       <div class="cards">
         <div class="card"><div class="card-label">Upregulated genes</div><div class="card-value">{{ summary.deg_up }}</div></div>
         <div class="card"><div class="card-label">Downregulated genes</div><div class="card-value">{{ summary.deg_down }}</div></div>
+        <div class="card"><div class="card-label">DEG status</div><div class="card-value" style="text-transform: capitalize; font-size: 16px;">{{ deg_status if deg_status else 'no_signal' }}</div></div>
+        <div class="card"><div class="card-label">Near-significant genes</div><div class="card-value">{{ summary.near_sig_genes if summary.near_sig_genes is not none else 0 }}</div></div>
         <div class="card"><div class="card-label">Threshold</div><div class="card-value" style="font-size: 13px;">{{ analysis_methods.deg_threshold }}</div></div>
       </div>
+
+      {% if deg_status == 'low_effect_size' %}
+      <div class="box box-warning">
+        Several genes showed statistically significant changes but did not meet the fold-change threshold.
+      </div>
+      {% endif %}
+
+      {% if deg_status == 'low_power' and exploratory_deg_candidates and exploratory_deg_candidates|length > 0 %}
+      <h3>Exploratory Low-confidence DEG Candidates</h3>
+      <div class="box box-warning">
+        No significant DEGs were detected under primary thresholds. The candidates below are exploratory and hypothesis-generating.
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Gene</th>
+            <th>log2FC</th>
+            <th>padj</th>
+            <th>p-value</th>
+            <th>Rank score</th>
+            <th>Label</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in exploratory_deg_candidates %}
+          <tr>
+            <td class="mono">{{ c.gene }}</td>
+            <td>{{ '%.3f'|format(c.log2fc) }}</td>
+            <td>{{ '%.2e'|format(c.padj) }}</td>
+            <td>{{ '%.2e'|format(c.pvalue) }}</td>
+            <td>{{ '%.3f'|format(c.rank_score) }}</td>
+            <td>{{ c.label }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
     </div>
 
     <div class="section">
@@ -463,6 +514,7 @@
             <th>log2FoldChange</th>
             <th>adjusted p-value</th>
             <th>Direction</th>
+            <th>Biotype</th>
             <th>Tags</th>
           </tr>
         </thead>
@@ -474,6 +526,9 @@
             <td>{{ row.padj }}</td>
             <td>
               <span class="tag {% if row.direction == 'Up' %}tag-direction-up{% elif row.direction == 'Down' %}tag-direction-down{% else %}tag-direction-neutral{% endif %}">{{ row.direction }}</span>
+            </td>
+            <td>
+              <span class="tag">{{ row.biotype if row.biotype else 'unknown' }}</span>
             </td>
             <td>
               {% if row.tags and row.tags|length > 0 %}
@@ -510,67 +565,9 @@
 
     <div class="section">
       <h2>8. Data Realism / Validation</h2>
-      {% if shared_realism_result %}
-      <h3>Realism Metrics</h3>
-      <div class="box">
-        <div><strong>Realism score:</strong> {{ '%.1f'|format(shared_realism_result.score) }} / 100</div>
-        <div><strong>Canonical genes:</strong> {{ shared_realism_result.metrics.canonical_count }} ({{ '%.1f'|format(100 * shared_realism_result.metrics.canonical_fraction) }}%)</div>
-        <div><strong>Housekeeping genes:</strong> {{ shared_realism_result.metrics.housekeeping_count }}</div>
-        <div><strong>Extreme p-values (&lt;1e-6):</strong> {{ '%.1f'|format(100 * shared_realism_result.metrics.extreme_pvalue_fraction) }}%</div>
+      <div class="box {% if realism_status == 'high' %}box-critical{% elif realism_status == 'low' %}box-ok{% else %}box-warning{% endif %}">
+        {{ realism_section_text }}
       </div>
-
-      <h3>Realism Assessment</h3>
-      <div class="box {% if shared_realism_result.level == 'HIGH' %}box-critical{% elif shared_realism_result.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
-        <strong>Realism Assessment:</strong>
-        <span class="badge {% if shared_realism_result.level == 'HIGH' %}badge-critical{% elif shared_realism_result.level == 'MEDIUM' %}badge-warning{% else %}badge-ok{% endif %}">{{ shared_realism_result.level }}</span>
-      </div>
-
-      {% if shared_realism_result.reasons and shared_realism_result.reasons|length > 0 %}
-        {% for reason in shared_realism_result.reasons %}
-          <div class="box {% if shared_realism_result.level == 'HIGH' %}box-critical{% elif shared_realism_result.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">{{ reason }}</div>
-        {% endfor %}
-      {% else %}
-        <div class="box box-ok">No strong evidence of data realism issues detected.</div>
-      {% endif %}
-
-      {% if realism_flag_map and realism_flag_map.mapped and realism_flag_map.mapped|length > 0 %}
-      <h3>Flag-to-Metric Mapping</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Realism Flag</th>
-            <th>Mapped Metric</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in realism_flag_map.mapped %}
-          <tr>
-            <td>{{ item.flag }}</td>
-            <td>{{ item.metric_name }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
-      {% endif %}
-
-      <h3>Realism Critical</h3>
-      {% if realism and realism.critical and realism.critical|length > 0 %}
-        {% for item in realism.critical %}
-        <div class="box box-critical"><strong>CRITICAL</strong>: {{ item }}</div>
-        {% endfor %}
-      {% else %}
-        <div class="box box-ok">No issues detected.</div>
-      {% endif %}
-
-      <h3>Realism Warnings</h3>
-      {% if realism and realism.warnings and realism.warnings|length > 0 %}
-        {% for item in realism.warnings %}
-        <div class="box box-warning"><strong>WARNING</strong>: {{ item }}</div>
-        {% endfor %}
-      {% else %}
-        <div class="box box-ok">No issues detected.</div>
-      {% endif %}
     </div>
 
     <div class="section">
@@ -629,6 +626,79 @@
         <div class="box"><strong>Recommendations:</strong><br />{{ llm.next_steps }}</div>
       {% else %}
         <div class="box box-warning">AI interpretation is unavailable for this run. {{ interpretation_limitation_text }}</div>
+      {% endif %}
+    </div>
+
+    <div class="section">
+      <h2>ncRNA Findings</h2>
+      {% if ncrna_section and ncrna_section.summary_metrics %}
+      <div class="cards">
+        <div class="card"><div class="card-label">Total DEGs</div><div class="card-value">{{ ncrna_section.summary_metrics.n_total_deg }}</div></div>
+        <div class="card"><div class="card-label">ncRNA DEGs</div><div class="card-value">{{ ncrna_section.summary_metrics.n_ncrna_deg }}</div></div>
+        <div class="card"><div class="card-label">lncRNA DEGs</div><div class="card-value">{{ ncrna_section.summary_metrics.n_lncRNA_deg }}</div></div>
+        <div class="card"><div class="card-label">miRNA DEGs</div><div class="card-value">{{ ncrna_section.summary_metrics.n_miRNA_deg }}</div></div>
+      </div>
+
+      {% if ncrna_section.narrative and ncrna_section.narrative|length > 0 %}
+      <div class="box">
+        <ul>
+          {% for line in ncrna_section.narrative %}
+          <li>{{ line }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      <h3>ncRNA Diagnostics</h3>
+      <div class="box">
+        {% if sparse_ncrna_metrics %}
+        <div><strong>Global zero fraction:</strong> {{ '%.3f'|format(sparse_ncrna_metrics.zero_fraction_global or 0) }}</div>
+        <div><strong>ncRNA dataset label:</strong> {{ sparse_ncrna_metrics.dataset_label or 'ncRNA-rich dataset' }}</div>
+        {% endif %}
+        <div><strong>ncRNA zero fraction:</strong> {{ '%.3f'|format(ncrna_section.qc_metrics.ncrna_zero_fraction or 0) }}</div>
+        <div><strong>ncRNA low-count fraction:</strong> {{ '%.3f'|format(ncrna_section.qc_metrics.ncrna_low_count_fraction or 0) }}</div>
+        <div><strong>miRNA detected count:</strong> {{ ncrna_section.qc_metrics.miRNA_detected_count or 0 }}</div>
+        <div><strong>lncRNA detected count:</strong> {{ ncrna_section.qc_metrics.lncRNA_detected_count or 0 }}</div>
+      </div>
+
+      <h3>ncRNA Warnings</h3>
+      {% if ncrna_section.warnings and ncrna_section.warnings|length > 0 %}
+        {% for w in ncrna_section.warnings %}
+          <div class="box box-warning">{{ w }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="box box-ok">No ncRNA-specific warnings detected.</div>
+      {% endif %}
+
+      <h3>Prioritized ncRNA Candidates</h3>
+      {% if ncrna_section.top_candidates and ncrna_section.top_candidates|length > 0 %}
+      <table>
+        <thead>
+          <tr>
+            <th>Gene</th>
+            <th>Biotype</th>
+            <th>Priority score</th>
+            <th>padj</th>
+            <th>|log2FC|</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in ncrna_section.top_candidates %}
+          <tr>
+            <td class="mono">{{ c.gene }}</td>
+            <td>{{ c.biotype }}</td>
+            <td>{{ '%.3f'|format(c.priority_score) }}</td>
+            <td>{{ '%.2e'|format(c.padj) }}</td>
+            <td>{{ '%.3f'|format(c.abs_log2fc) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <div class="box box-ok">No ncRNA candidates met prioritization criteria.</div>
+      {% endif %}
+      {% else %}
+      <div class="box box-ok">ncRNA assessment is not available for this run.</div>
       {% endif %}
     </div>
 
