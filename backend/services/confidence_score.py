@@ -159,10 +159,12 @@ def format_confidence_breakdown(score_breakdown: dict[str, Any]) -> list[str]:
     qc = int(round(_safe_float(score_breakdown.get("qc_penalty"), 0.0)))
     design = int(round(_safe_float(score_breakdown.get("design_penalty"), 0.0)))
     realism = int(round(_safe_float(score_breakdown.get("realism_penalty"), 0.0)))
+    stability = int(round(_safe_float(score_breakdown.get("stability_penalty"), 0.0)))
     return [
         f"Data Quality Penalty: -{qc}",
         f"Experimental Design Penalty: -{design}",
         f"Data Realism Penalty: -{realism}",
+        f"Stability Penalty: -{stability}",
     ]
 
 
@@ -173,11 +175,12 @@ def generate_penalty_explanations(
     score_breakdown: dict[str, Any],
 ) -> dict[str, list[str]]:
     """Map each non-zero penalty category to 1-2 deterministic causal explanations."""
-    out: dict[str, list[str]] = {"qc": [], "design": [], "realism": []}
+    out: dict[str, list[str]] = {"qc": [], "design": [], "realism": [], "stability": []}
 
     qc_penalty = _safe_float(score_breakdown.get("qc_penalty"), 0.0)
     design_penalty = _safe_float(score_breakdown.get("design_penalty"), 0.0)
     realism_penalty = _safe_float(score_breakdown.get("realism_penalty"), 0.0)
+    stability_penalty = _safe_float(score_breakdown.get("stability_penalty"), 0.0)
 
     qc_flags = [str(x) for x in (flags.get("qc_flags", []) or []) if str(x).strip()]
     realism_flags = [str(x) for x in (flags.get("realism_flags", []) or []) if str(x).strip()]
@@ -221,6 +224,9 @@ def generate_penalty_explanations(
         if realism_flags and len(out["realism"]) < 2:
             out["realism"].append("Multiple realism flags indicate atypical signal structure")
 
+    if stability_penalty > 0:
+        out["stability"].append("Perturbation-based stability analysis indicates sensitivity of DEG results")
+
     return out
 
 
@@ -243,6 +249,7 @@ def generate_confidence_explanation(
         ("qc", _safe_float(score_breakdown.get("qc_penalty"), 0.0), "data-quality issues"),
         ("realism", _safe_float(score_breakdown.get("realism_penalty"), 0.0), "realism concerns"),
         ("design", _safe_float(score_breakdown.get("design_penalty"), 0.0), "design limitations"),
+        ("stability", _safe_float(score_breakdown.get("stability_penalty"), 0.0), "stability sensitivity"),
     ]
     ordered = sorted(categories, key=lambda x: (-x[1], x[0]))
 
@@ -294,6 +301,7 @@ def render_confidence_section_html(confidence_data: dict[str, Any]) -> dict[str,
             ("qc", _safe_float(breakdown.get("qc_penalty"), 0.0)),
             ("design", _safe_float(breakdown.get("design_penalty"), 0.0)),
             ("realism", _safe_float(breakdown.get("realism_penalty"), 0.0)),
+            ("stability", _safe_float(breakdown.get("stability_penalty"), 0.0)),
         ],
         key=lambda x: (-x[1], x[0]),
     )
@@ -313,10 +321,11 @@ def _validate_breakdown_consistency(confidence_score: int, score_breakdown: dict
     qc = _safe_float(score_breakdown.get("qc_penalty"), 0.0)
     design = _safe_float(score_breakdown.get("design_penalty"), 0.0)
     realism = _safe_float(score_breakdown.get("realism_penalty"), 0.0)
-    expected = max(0, int(round(100 - qc - design - realism)))
+    stability = _safe_float(score_breakdown.get("stability_penalty"), 0.0)
+    expected = max(0, int(round(100 - qc - design - realism - stability)))
     if expected != _safe_int(confidence_score, 0):
         logs.append(
-            f"Confidence breakdown mismatch: score={confidence_score}, expected={expected} from penalties (qc={qc}, design={design}, realism={realism})."
+            f"Confidence breakdown mismatch: score={confidence_score}, expected={expected} from penalties (qc={qc}, design={design}, realism={realism}, stability={stability})."
         )
     return logs
 
@@ -328,12 +337,15 @@ def compute_confidence_score(
     qc_flags: list[str],
     realism_metrics: dict[str, Any],
     realism_flags: list[str],
+    stability_penalty: float = 0.0,
+    stability_reason: str = "",
 ) -> dict[str, Any]:
     qc_penalty, qc_exp = compute_qc_penalty(qc_metrics=qc_metrics, qc_flags=qc_flags)
     design_penalty, design_exp = compute_design_penalty(n_samples=n_samples, groups=groups)
     realism_penalty, realism_exp = compute_realism_penalty(realism_metrics=realism_metrics, realism_flags=realism_flags)
 
-    score = max(0, int(round(100 - qc_penalty - design_penalty - realism_penalty)))
+    stability_pen = max(0.0, _safe_float(stability_penalty, 0.0))
+    score = max(0, int(round(100 - qc_penalty - design_penalty - realism_penalty - stability_pen)))
     if score >= 80:
         level = "HIGH"
     elif score >= 50:
@@ -345,6 +357,7 @@ def compute_confidence_score(
         "qc_penalty": float(qc_penalty),
         "realism_penalty": float(realism_penalty),
         "design_penalty": float(design_penalty),
+        "stability_penalty": float(stability_pen),
     }
 
     penalty_explanations = generate_penalty_explanations(
@@ -362,11 +375,17 @@ def compute_confidence_score(
     confidence_breakdown_text = format_confidence_breakdown(score_breakdown)
     consistency_logs = _validate_breakdown_consistency(score, score_breakdown)
 
+    all_explanations = generate_confidence_explanations(qc_exp, design_exp, realism_exp)
+    if stability_pen > 0:
+        t = str(stability_reason or "Stability analysis indicates perturbation sensitivity").strip()
+        if t and t not in all_explanations:
+            all_explanations.append(t)
+
     return {
         "confidence_score": score,
         "confidence_level": level,
         "score_breakdown": score_breakdown,
-        "explanations": generate_confidence_explanations(qc_exp, design_exp, realism_exp),
+        "explanations": all_explanations,
         "confidence_breakdown_text": confidence_breakdown_text,
         "confidence_penalty_explanations": penalty_explanations,
         "confidence_explanation": confidence_explanation,
@@ -420,6 +439,11 @@ def compute_confidence_from_pipeline(
         "top_gene_fraction": _extract_top_gene_fraction(realism_metrics_obj, realism_flags),
     }
 
+    stability_obj = summary_dict.get("stability_assessment") if isinstance(summary_dict.get("stability_assessment"), dict) else {}
+    stability_penalty_obj = stability_obj.get("stability_penalty") if isinstance(stability_obj.get("stability_penalty"), dict) else {}
+    stability_penalty = _safe_float(stability_penalty_obj.get("stability_penalty"), 0.0)
+    stability_reason = str(stability_penalty_obj.get("penalty_reason", "") or "")
+
     out = compute_confidence_score(
         n_samples=_safe_int(summary_dict.get("n_samples"), 0),
         groups=groups,
@@ -427,6 +451,8 @@ def compute_confidence_from_pipeline(
         qc_flags=qc_flags,
         realism_metrics=realism_metrics,
         realism_flags=realism_flags,
+        stability_penalty=stability_penalty,
+        stability_reason=stability_reason,
     )
 
     # Optional ncRNA-aware explanatory hook (no score change).

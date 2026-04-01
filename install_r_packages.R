@@ -1,6 +1,9 @@
 options(repos = c(CRAN = "https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))
 
-cran_pkgs <- c("optparse", "ggplot2", "ggrepel", "pheatmap", "RColorBrewer", "jsonlite")
+cran_pkgs <- c(
+  "optparse", "ggplot2", "ggrepel", "pheatmap", "RColorBrewer", "jsonlite",
+  "dplyr", "tibble", "purrr", "tidyr"
+)
 to_install <- cran_pkgs[!cran_pkgs %in% rownames(installed.packages())]
 if (length(to_install) > 0) {
   cat("Installing CRAN packages:", paste(to_install, collapse = ", "), "\n")
@@ -30,7 +33,7 @@ if (!"ashr" %in% rownames(installed.packages())) {
 
 cat("\n=== Verification ===\n")
 for (pkg in c("optparse", "ggplot2", "ggrepel", "pheatmap", "RColorBrewer",
-              "jsonlite", "DESeq2", "ashr")) {
+              "jsonlite", "dplyr", "tibble", "purrr", "tidyr", "DESeq2", "ashr")) {
   ok <- requireNamespace(pkg, quietly = TRUE)
   cat(sprintf("  %-18s %s\n", pkg, if (ok) "[OK]" else "[MISSING]"))
 }

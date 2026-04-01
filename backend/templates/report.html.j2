@@ -253,6 +253,27 @@
           <div class="card-label">Realism Status</div>
           <div class="card-value" style="text-transform: capitalize;">{{ analysis_status.realism_status if analysis_status else 'unstable' }}</div>
         </div>
+        <div class="card">
+          <div class="card-label">Stability Badge</div>
+          <div class="card-value" style="text-transform: capitalize;">{{ stability_assessment.stability_badge if stability_assessment and stability_assessment.stability_badge else 'unknown' }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Stability Score</div>
+          {% set final_public_score = (stability_assessment.final_stability_score|default(none)) if stability_assessment else none %}
+          {% if final_public_score is none and stability_assessment %}
+            {% set final_public_score = stability_assessment.stability_score|default(none) %}
+          {% endif %}
+          <div class="card-value">
+            {% if final_public_score is not none %}
+              {{ '%.3f'|format(final_public_score) }}
+            {% else %}
+              N/A
+            {% endif %}
+          </div>
+          {% if stability_assessment and stability_assessment.final_stability_score is none and stability_assessment.effect_stability_score is not none %}
+            <div class="muted" style="margin-top: 4px; font-size: 12px;">Effect-size consistency: {{ '%.3f'|format(stability_assessment.effect_stability_score) }}</div>
+          {% endif %}
+        </div>
       </div>
     </div>
 
@@ -292,7 +313,7 @@
         {% endif %}
 
         {% if confidence_section and confidence_section.penalty_explanations %}
-          {% set order = confidence_section.ordered_categories if confidence_section.ordered_categories else ['qc', 'design', 'realism'] %}
+          {% set order = confidence_section.ordered_categories if confidence_section.ordered_categories else ['qc', 'design', 'realism', 'stability'] %}
           {% for key in order %}
             {% set items = confidence_section.penalty_explanations.get(key, []) %}
             {% if items and items|length > 0 %}
@@ -310,6 +331,57 @@
           <div class="box {% if confidence_section.level == 'LOW' %}box-critical{% elif confidence_section.level == 'MEDIUM' %}box-warning{% else %}box-ok{% endif %}">
             {{ confidence_section.explanation }}
           </div>
+        {% endif %}
+
+        {% if stability_assessment and (stability_assessment.stability_headline or stability_assessment.summary_text or stability_assessment.sample_influence_text) %}
+          <h3>Stability Assessment</h3>
+          <div class="box {% if stability_assessment.stability_badge == 'low' %}box-critical{% elif stability_assessment.stability_badge in ['moderate', 'low_signal', 'not_applicable'] %}box-warning{% else %}box-ok{% endif %}">
+            <strong>{{ stability_assessment.stability_headline if stability_assessment.stability_headline else 'Stability assessment available.' }}</strong><br />
+            {% set final_public_score = stability_assessment.final_stability_score|default(none) %}
+            {% if final_public_score is none %}
+              {% set final_public_score = stability_assessment.stability_score|default(none) %}
+            {% endif %}
+            {% if final_public_score is not none %}
+              Public stability score: {{ '%.3f'|format(final_public_score) }}.<br />
+            {% elif stability_assessment.effect_stability_score is not none %}
+              Public stability score: N/A (insufficient robust DEG signal). Effect-size consistency: {{ '%.3f'|format(stability_assessment.effect_stability_score) }}.<br />
+            {% else %}
+              Public stability score: N/A (insufficient robust DEG signal).<br />
+            {% endif %}
+            {% if stability_assessment.summary_text %}
+              {{ stability_assessment.summary_text }}<br />
+            {% endif %}
+            {% if stability_assessment.directionality_text %}
+              {{ stability_assessment.directionality_text }}<br />
+            {% endif %}
+            {% if stability_assessment.top_rank_definition_text %}
+              {{ stability_assessment.top_rank_definition_text }}<br />
+            {% endif %}
+            {% if stability_assessment.pca_qc_conflict_text %}
+              {{ stability_assessment.pca_qc_conflict_text }}<br />
+            {% endif %}
+            {% if stability_assessment.sample_influence_text %}
+              {{ stability_assessment.sample_influence_text }}
+            {% endif %}
+          </div>
+
+          {% if stability_assessment.key_stability_findings and stability_assessment.key_stability_findings|length > 0 %}
+            <h4>Key Stability Findings</h4>
+            <ul>
+              {% for item in stability_assessment.key_stability_findings %}
+                <li>{{ item }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          {% if stability_assessment.warnings and stability_assessment.warnings|length > 0 %}
+            <h4>Stability Warnings</h4>
+            <ul>
+              {% for w in stability_assessment.warnings %}
+                <li>{{ w }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
         {% endif %}
       </div>
       <h3>Assessment Basis</h3>

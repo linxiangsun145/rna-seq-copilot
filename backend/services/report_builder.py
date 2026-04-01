@@ -47,6 +47,51 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _normalize_stability_assessment(raw: Any) -> dict[str, Any]:
+    """Normalize stability payload for consistent report rendering semantics."""
+    if not isinstance(raw, dict):
+        return {}
+
+    out: dict[str, Any] = dict(raw)
+    signal_state = str(out.get("signal_state", "unknown") or "unknown")
+
+    # Numeric normalization.
+    out["deg_stability_score"] = _to_float(out.get("deg_stability_score"))
+    out["effect_stability_score"] = _to_float(out.get("effect_stability_score"))
+    out["final_stability_score"] = _to_float(out.get("final_stability_score"))
+    out["stability_score"] = _to_float(out.get("stability_score"))
+
+    # Backward compatibility: old payload may only provide stability_score.
+    if out.get("final_stability_score") is None and out.get("stability_score") is not None:
+        out["final_stability_score"] = out.get("stability_score")
+
+    if signal_state == "no_detectable_signal":
+        out["stability_badge"] = "not_applicable"
+        out["deg_metrics_applicable"] = False
+        out["stability_mode"] = "not_applicable"
+        out["final_stability_score"] = None
+    elif signal_state == "weak_signal":
+        out["stability_badge"] = "low_signal"
+        out["deg_metrics_applicable"] = False
+        out["stability_mode"] = "effect_only"
+        out["final_stability_score"] = None
+    else:
+        out["deg_metrics_applicable"] = bool(out.get("deg_metrics_applicable", False))
+        if not out.get("stability_mode"):
+            out["stability_mode"] = "deg_based"
+
+    # Keep legacy field aligned with public final score semantics.
+    out["stability_score"] = out.get("final_stability_score")
+
+    # Ensure list-shaped fields are always lists for template safety.
+    key_findings = out.get("key_stability_findings")
+    out["key_stability_findings"] = key_findings if isinstance(key_findings, list) else []
+    warnings = out.get("warnings")
+    out["warnings"] = warnings if isinstance(warnings, list) else []
+
+    return out
+
+
 def _load_top_genes_table(job_dir: Path, n: int = 20) -> list[dict[str, Any]]:
     deg_path = job_dir / "results" / "deg_results.csv"
     if not deg_path.exists():
@@ -1868,6 +1913,7 @@ def build_report(
     deg_status = str(summary_data.get("deg_status", analysis_status_view.get("deg_status", "no_signal")) or "no_signal")
     exploratory_deg_candidates = summary_data.get("exploratory_deg_candidates") if isinstance(summary_data.get("exploratory_deg_candidates"), list) else []
     sparse_ncrna_metrics = summary_data.get("sparse_ncrna_metrics") if isinstance(summary_data.get("sparse_ncrna_metrics"), dict) else {}
+    stability_assessment = _normalize_stability_assessment(summary_data.get("stability_assessment"))
     ncrna_assessment = summary_data.get("ncrna_assessment") if isinstance(summary_data.get("ncrna_assessment"), dict) else {}
     ncrna_section = render_ncrna_section_html(ncrna_assessment)
     top_genes_table = _load_top_genes_table(job_dir, n=20)
@@ -2123,6 +2169,7 @@ def build_report(
         deg_status=deg_status,
         exploratory_deg_candidates=exploratory_deg_candidates,
         sparse_ncrna_metrics=sparse_ncrna_metrics,
+        stability_assessment=stability_assessment,
         ncrna_section=ncrna_section,
         llm=llm_payload,
         plots=plots,

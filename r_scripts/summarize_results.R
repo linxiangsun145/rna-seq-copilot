@@ -1,6 +1,6 @@
 # summarize_results.R — Build the structured summary JSON consumed by LLM
 
-build_summary <- function(dds, res_df, vsd, meta, contrast, group_col) {
+build_summary <- function(dds, res_df, vsd, meta, contrast, group_col, stability_assessment = NULL) {
 
   # Groups
   if (group_col %in% colnames(colData(dds))) {
@@ -84,7 +84,7 @@ build_summary <- function(dds, res_df, vsd, meta, contrast, group_col) {
     .add_stat_warning("warning", "high_na_padj_fraction", sprintf("High NA padj fraction detected (%d/%d).", n_na_padj, nrow(res_df)), metric = "padj")
   }
 
-  list(
+  out <- list(
     n_samples       = ncol(dds),
     groups          = as.list(group_levels),
     contrast        = contrast,
@@ -97,4 +97,10 @@ build_summary <- function(dds, res_df, vsd, meta, contrast, group_col) {
     data_issues     = as.list(data_issues),
     warning_items   = warning_items
   )
+
+  if (!is.null(stability_assessment) && is.list(stability_assessment) && length(stability_assessment) > 0) {
+    out$stability_assessment <- stability_assessment
+  }
+
+  out
 }

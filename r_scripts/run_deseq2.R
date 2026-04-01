@@ -192,6 +192,26 @@ source(file.path(script_dir, "plot_heatmap.R"))
 source(file.path(script_dir, "summarize_results.R"))
 source(file.path(script_dir, "qc_analysis.R"))
 
+# Stability module (optional runtime layer; non-fatal if unavailable/fails)
+project_root <- normalizePath(file.path(script_dir, ".."), mustWork = FALSE)
+stability_dir <- file.path(project_root, "R")
+stability_scripts <- c(
+  "stability_resampling.R",
+  "stability_metrics.R",
+  "stability_scoring.R",
+  "stability_reporting.R",
+  "stability_plots.R",
+  "stability_main.R"
+)
+stability_available <- all(file.exists(file.path(stability_dir, stability_scripts)))
+if (stability_available) {
+  for (f in stability_scripts) {
+    source(file.path(stability_dir, f))
+  }
+} else {
+  cat("[Stability] Module scripts not fully available; skipping stability analysis.\n")
+}
+
 # ── Generate DEG plots ────────────────────────────────────────────────────────
 plot_pca(vsd,     meta, contrast_factor, file.path(plots_dir, "pca.png"))
 plot_volcano(res_df,                     file.path(plots_dir, "volcano.png"),
@@ -211,6 +231,121 @@ run_qc(
   results_dir     = results_dir
 )
 
+# ── Stability / perturbation analysis (LOO + subsampling defaults) ──────────
+stability_assessment <- NULL
+if (stability_available && exists("run_stability_analysis", mode = "function")) {
+  cat("[Stability] Running perturbation stability analysis...\n")
+  stability_assessment <- tryCatch({
+    metadata_stab <- as.data.frame(meta)
+    metadata_stab$sample_id <- rownames(meta)
+
+    qc_context <- list()
+    pca_sep_for_stability <- "unknown"
+    qc_json_path <- file.path(results_dir, "qc_report.json")
+    if (file.exists(qc_json_path)) {
+      qc_obj <- tryCatch(jsonlite::fromJSON(qc_json_path, simplifyVector = FALSE), error = function(e) NULL)
+      if (!is.null(qc_obj) && is.list(qc_obj)) {
+        group_qc <- qc_obj$group_qc
+        group_corr <- c()
+        if (!is.null(group_qc) && length(group_qc) > 0) {
+          for (nm in names(group_qc)) {
+            m <- suppressWarnings(as.numeric(group_qc[[nm]]$mean_correlation))
+            if (!is.na(m)) group_corr <- c(group_corr, m)
+          }
+        }
+        if (length(group_corr) > 0) {
+          qc_context$mean_within_group_correlation <- mean(group_corr, na.rm = TRUE)
+        }
+
+        pc1 <- suppressWarnings(as.numeric(qc_obj$pca_variance$PC1))
+        if (!is.na(pc1)) {
+          pca_sep_for_stability <- if (pc1 >= 0.30) "clear" else if (pc1 >= 0.15) "weak" else "none"
+        }
+      }
+    }
+
+    stab_results <- run_stability_analysis(
+      counts = counts_mat,
+      metadata = metadata_stab,
+      sample_col = "sample_id",
+      condition_col = contrast_factor,
+      design_formula = opt$formula,
+      contrast = c(contrast_factor, contrast_num, contrast_denom),
+      padj_threshold = 0.05,
+      log2fc_threshold = 1.0,
+      top_n = 50,
+      modes = NULL,
+      subsample_fraction = 0.8,
+      subsample_iterations = 50,
+      seed = 123,
+      pca_separation = pca_sep_for_stability,
+      qc_context = qc_context,
+      verbose = FALSE
+    )
+
+    stability_outdir <- file.path(results_dir, "stability")
+    export_stability_outputs(stab_results, stability_outdir, prefix = "stability")
+
+    ds <- stab_results$dataset_stability
+    list(
+      stability_score = as.numeric(ds$final_stability_score),
+      deg_stability_score = as.numeric(ds$deg_stability_score),
+      effect_stability_score = as.numeric(ds$effect_stability_score),
+      final_stability_score = as.numeric(ds$final_stability_score),
+      stability_level = as.character(ds$stability_level),
+      stability_badge = as.character(stab_results$stability_badge),
+      signal_state = as.character(stab_results$signal_state),
+      deg_metrics_applicable = as.logical(stab_results$deg_metrics_applicable),
+      stability_mode = as.character(stab_results$stability_mode),
+      stability_headline = as.character(stab_results$stability_headline),
+      key_stability_findings = as.list(as.character(stab_results$narrative$key_stability_findings)),
+      warnings = as.list(as.character(stab_results$warnings)),
+      summary_text = as.character(stab_results$narrative$summary_text),
+      directionality_text = as.character(stab_results$narrative$directionality_text),
+      top_rank_definition_text = as.character(stab_results$narrative$top_rank_definition_text),
+      pca_qc_conflict_text = as.character(stab_results$narrative$pca_qc_conflict_text),
+      sample_influence_text = as.character(stab_results$narrative$sample_influence_text),
+      reference_deg_count = as.integer(ds$reference_deg_count),
+      mean_deg_recovery_rate = as.numeric(ds$mean_deg_recovery_rate),
+      mean_top_n_overlap = as.numeric(ds$mean_top_n_overlap),
+      mean_log2fc_correlation = as.numeric(ds$mean_log2fc_correlation),
+      mean_log2fc_rmse = as.numeric(ds$mean_log2fc_rmse),
+      signal_collapse_fraction = as.numeric(ds$fraction_of_iterations_with_signal_collapse),
+      stability_penalty = list(
+        stability_penalty = as.numeric(stab_results$stability_penalty$stability_penalty),
+        penalty_level = as.character(stab_results$stability_penalty$penalty_level),
+        penalty_reason = as.character(stab_results$stability_penalty$penalty_reason)
+      )
+    )
+  }, error = function(e) {
+    cat(sprintf("[Stability] Warning: stability analysis failed: %s\n", e$message))
+    list(
+      stability_score = NA_real_,
+      deg_stability_score = NA_real_,
+      effect_stability_score = NA_real_,
+      final_stability_score = NA_real_,
+      stability_level = "unknown",
+      stability_badge = "unknown",
+      signal_state = "unknown",
+      deg_metrics_applicable = FALSE,
+      stability_mode = "not_applicable",
+      stability_headline = "Stability analysis was not available for this run.",
+      key_stability_findings = as.list(c("Stability analysis could not be completed; interpret DEG robustness cautiously.")),
+      warnings = as.list(c("STABILITY_ANALYSIS_FAILED")),
+      summary_text = "Stability analysis could not be completed; robustness of DEG findings is not fully assessed.",
+      directionality_text = "Effect-size direction stability could not be evaluated.",
+      top_rank_definition_text = "Top-ranked genes are defined based on statistical ranking and may not meet differential expression thresholds.",
+      pca_qc_conflict_text = "",
+      sample_influence_text = "Single-sample influence could not be evaluated.",
+      stability_penalty = list(
+        stability_penalty = 0,
+        penalty_level = "none",
+        penalty_reason = "No stability penalty applied because stability analysis failed."
+      )
+    )
+  })
+}
+
 # ── Write summary JSON ────────────────────────────────────────────────────────
 summary_json <- build_summary(
   dds        = dds,
@@ -218,9 +353,10 @@ summary_json <- build_summary(
   vsd        = vsd,
   meta       = meta,
   contrast   = paste(contrast_parts, collapse = "_vs_"),
-  group_col  = contrast_factor
+  group_col  = contrast_factor,
+  stability_assessment = stability_assessment
 )
-write(toJSON(summary_json, auto_unbox = TRUE, pretty = TRUE),
+write(toJSON(summary_json, auto_unbox = TRUE, pretty = TRUE, na = "null"),
       file.path(results_dir, "summary.json"))
 
 cat("[DESeq2] Done. Outputs written to:", outdir, "\n")

@@ -81,12 +81,68 @@ class AnalysisSummary(BaseModel):
     sparse_ncrna_metrics: Optional["SparseNcRNAMetrics"] = None
     analysis_status: Optional["AnalysisStatus"] = None
     statistical_validation: List[str] = []
+    stability_assessment: Optional["StabilityAssessment"] = None
 
 
 class ConfidencePenaltyBreakdown(BaseModel):
     qc_penalty: float
     realism_penalty: float
     design_penalty: float
+    stability_penalty: float = 0.0
+
+
+class StabilityPenalty(BaseModel):
+    stability_penalty: float = 0.0
+    penalty_level: str = "none"
+    penalty_reason: str = ""
+
+
+class StabilityAssessment(BaseModel):
+    stability_score: Optional[float] = None
+    deg_stability_score: Optional[float] = None
+    effect_stability_score: Optional[float] = None
+    final_stability_score: Optional[float] = None
+    stability_level: str = "unknown"  # high | moderate | low | low_signal | unknown
+    stability_badge: str = "unknown"  # high | moderate | low | low_signal | not_applicable | unknown
+    signal_state: str = "no_detectable_signal"  # no_detectable_signal | weak_signal | strong_signal | unknown
+    deg_metrics_applicable: bool = False
+    stability_mode: str = "not_applicable"  # deg_based | effect_only | not_applicable
+    stability_headline: str = ""
+    key_stability_findings: List[str] = []
+    warnings: List[str] = []
+    summary_text: str = ""
+    directionality_text: str = ""
+    top_rank_definition_text: str = ""
+    pca_qc_conflict_text: str = ""
+    sample_influence_text: str = ""
+    reference_deg_count: Optional[int] = None
+    mean_deg_recovery_rate: Optional[float] = None
+    mean_top_n_overlap: Optional[float] = None
+    mean_log2fc_correlation: Optional[float] = None
+    mean_log2fc_rmse: Optional[float] = None
+    signal_collapse_fraction: Optional[float] = None
+    stability_penalty: StabilityPenalty = StabilityPenalty()
+
+    @field_validator(
+        "stability_score",
+        "deg_stability_score",
+        "effect_stability_score",
+        "final_stability_score",
+        "mean_deg_recovery_rate",
+        "mean_top_n_overlap",
+        "mean_log2fc_correlation",
+        "mean_log2fc_rmse",
+        "signal_collapse_fraction",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_optional_float(cls, v: Any) -> Optional[float]:
+        if v in (None, "", "NA", "NaN", "nan", "N/A"):
+            return None
+        try:
+            return float(v)
+        except Exception:
+            return None
 
 
 class ConfidenceAssessment(BaseModel):
