@@ -22,19 +22,59 @@ detect_signal_state <- function(n_ref_deg,
   "strong_signal"
 }
 
-#' Determine stability computation mode from signal state.
+#' Determine whether effect-size diagnostics are mathematically computable.
+#' @param dataset_metrics Dataset-level metric list.
+#' @return Logical.
+is_effect_metrics_computable <- function(dataset_metrics) {
+  !is.na(dplyr::coalesce(dataset_metrics$mean_log2fc_correlation, NA_real_)) ||
+    !is.na(dplyr::coalesce(dataset_metrics$median_log2fc_mad, NA_real_))
+}
+
+#' Determine stability mode from signal state and effect-metric availability.
 #' @param signal_state Output of detect_signal_state().
+#' @param effect_metrics_computable Whether effect metrics can be computed.
 #' @return Character mode: deg_based | effect_only | not_applicable
-compute_stability_mode <- function(signal_state) {
+determine_stability_mode <- function(signal_state, effect_metrics_computable = FALSE) {
   if (identical(signal_state, "strong_signal")) return("deg_based")
-  if (identical(signal_state, "weak_signal")) return("effect_only")
+  if (identical(signal_state, "weak_signal") || identical(signal_state, "no_detectable_signal")) {
+    if (isTRUE(effect_metrics_computable)) return("effect_only")
+    return("not_applicable")
+  }
   "not_applicable"
+}
+
+# Backward-compatible alias.
+compute_stability_mode <- determine_stability_mode
+
+#' Determine run status (completed | limited | failed).
+#' @param signal_state Stability signal state.
+#' @param stability_mode Stability mode.
+#' @param engine_failed Whether perturbation engine failed.
+#' @return Character run status.
+determine_stability_run_status <- function(signal_state,
+                                           stability_mode,
+                                           engine_failed = FALSE) {
+  if (isTRUE(engine_failed)) return("failed")
+  if (identical(signal_state, "strong_signal")) return("completed")
+  "limited"
 }
 
 #' Compute effect-size-only stability score for no-signal datasets.
 #' @param dataset_metrics Dataset-level metric list.
 #' @return List(score, components)
 compute_effect_size_only_score <- function(dataset_metrics) {
+  has_corr <- !is.na(dplyr::coalesce(dataset_metrics$mean_log2fc_correlation, NA_real_))
+  has_var <- !is.na(dplyr::coalesce(dataset_metrics$median_log2fc_mad, NA_real_))
+  if (!has_corr && !has_var) {
+    return(list(
+      score = NA_real_,
+      components = list(
+        lfc_corr_component = NA_real_,
+        lfc_variability_component = NA_real_
+      )
+    ))
+  }
+
   corr_scaled <- ifelse(
     is.na(dataset_metrics$mean_log2fc_correlation),
     0,
@@ -97,8 +137,11 @@ compute_final_stability_score <- function(signal_state,
 #' @param signal_state Signal state string.
 #' @param final_stability_score Public final stability score.
 #' @return Badge label.
-assign_stability_badge <- function(signal_state, final_stability_score) {
-  if (identical(signal_state, "no_detectable_signal")) return("not_applicable")
+assign_stability_badge <- function(signal_state,
+                                   final_stability_score,
+                                   stability_run_status = "limited") {
+  if (identical(stability_run_status, "failed")) return("unknown")
+  if (identical(signal_state, "no_detectable_signal")) return("low_signal")
   if (identical(signal_state, "weak_signal")) return("low_signal")
 
   score <- dplyr::coalesce(final_stability_score, 0)
@@ -127,11 +170,16 @@ summarize_dataset_stability <- function(iteration_metrics,
 
   mean_iter_deg <- safe_mean(iteration_metrics$n_deg_iter)
   sd_iter_deg <- safe_sd(iteration_metrics$n_deg_iter)
+  effect_metrics_computable <- is_effect_metrics_computable(list(
+    mean_log2fc_correlation = safe_mean(iteration_metrics$log2fc_correlation),
+    median_log2fc_mad = safe_median(iteration_metrics$median_abs_delta_log2fc)
+  ))
   signal_state <- detect_signal_state(
     n_ref_deg = reference_deg_count,
     weak_effect_gene_count = weak_effect_gene_count
   )
-  stability_mode <- compute_stability_mode(signal_state)
+  stability_mode <- determine_stability_mode(signal_state, effect_metrics_computable)
+  stability_run_status <- determine_stability_run_status(signal_state, stability_mode, engine_failed = FALSE)
   deg_metrics_applicable <- identical(signal_state, "strong_signal")
   signal_detectable <- deg_metrics_applicable
 
@@ -139,7 +187,9 @@ summarize_dataset_stability <- function(iteration_metrics,
     reference_deg_count = as.integer(reference_deg_count),
     weak_effect_gene_count = as.integer(weak_effect_gene_count),
     signal_state = signal_state,
+    stability_run_status = stability_run_status,
     stability_mode = stability_mode,
+    effect_metrics_computable = effect_metrics_computable,
     deg_metrics_applicable = deg_metrics_applicable,
     signal_detectable = signal_detectable,
     lack_of_detectable_signal = !signal_detectable,
@@ -187,7 +237,10 @@ summarize_dataset_stability <- function(iteration_metrics,
 #' @return List with score and component breakdown.
 compute_stability_score <- function(dataset_metrics) {
   signal_state <- dataset_metrics$signal_state
-  stability_mode <- compute_stability_mode(signal_state)
+  stability_mode <- determine_stability_mode(
+    signal_state,
+    effect_metrics_computable = isTRUE(dataset_metrics$effect_metrics_computable)
+  )
   deg_stability_score <- compute_deg_stability_score(dataset_metrics)
   effect_stability_score <- compute_effect_stability_score(dataset_metrics)
   final_stability_score <- compute_final_stability_score(
@@ -195,7 +248,8 @@ compute_stability_score <- function(dataset_metrics) {
     deg_stability_score = deg_stability_score,
     effect_stability_score = effect_stability_score
   )
-  badge <- assign_stability_badge(signal_state, final_stability_score)
+  run_status <- determine_stability_run_status(signal_state, stability_mode, engine_failed = FALSE)
+  badge <- assign_stability_badge(signal_state, final_stability_score, run_status)
 
   level <- dplyr::case_when(
     badge == "high" ~ "high",
@@ -225,6 +279,7 @@ compute_stability_score <- function(dataset_metrics) {
     final_stability_score = final_stability_score,
     stability_level = level,
     stability_badge = badge,
+    stability_run_status = run_status,
     stability_mode = stability_mode,
     formula = formula,
     components = components

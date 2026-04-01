@@ -105,8 +105,10 @@ class StabilityAssessment(BaseModel):
     stability_level: str = "unknown"  # high | moderate | low | low_signal | unknown
     stability_badge: str = "unknown"  # high | moderate | low | low_signal | not_applicable | unknown
     signal_state: str = "no_detectable_signal"  # no_detectable_signal | weak_signal | strong_signal | unknown
+    stability_run_status: str = "limited"  # completed | limited | failed
     deg_metrics_applicable: bool = False
     stability_mode: str = "not_applicable"  # deg_based | effect_only | not_applicable
+    influence_mode: str = "not_applicable"  # deg_based | effect_or_rank_based | not_applicable
     stability_headline: str = ""
     key_stability_findings: List[str] = []
     warnings: List[str] = []
@@ -118,9 +120,11 @@ class StabilityAssessment(BaseModel):
     reference_deg_count: Optional[int] = None
     mean_deg_recovery_rate: Optional[float] = None
     mean_top_n_overlap: Optional[float] = None
+    top_rank_overlap: Optional[float] = None
     mean_log2fc_correlation: Optional[float] = None
     mean_log2fc_rmse: Optional[float] = None
     signal_collapse_fraction: Optional[float] = None
+    sample_influence: Optional[Dict[str, Any]] = None
     stability_penalty: StabilityPenalty = StabilityPenalty()
 
     @field_validator(
@@ -130,6 +134,7 @@ class StabilityAssessment(BaseModel):
         "final_stability_score",
         "mean_deg_recovery_rate",
         "mean_top_n_overlap",
+        "top_rank_overlap",
         "mean_log2fc_correlation",
         "mean_log2fc_rmse",
         "signal_collapse_fraction",

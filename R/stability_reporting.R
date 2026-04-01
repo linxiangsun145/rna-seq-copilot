@@ -13,9 +13,27 @@ generate_stability_warnings <- function(dataset_stability,
                                         qc_context = list()) {
   warnings <- character()
 
+  get_scalar_numeric <- function(x) {
+    if (is.null(x) || length(x) == 0) return(NA_real_)
+    suppressWarnings(as.numeric(x[[1]]))
+  }
+
+  get_scalar_text <- function(x, default = "unknown") {
+    if (is.null(x) || length(x) == 0) return(default)
+    val <- as.character(x[[1]])
+    if (is.na(val) || !nzchar(val)) return(default)
+    val
+  }
+
   signal_state <- as.character(dataset_stability$signal_state)
+  stability_run_status <- as.character(dataset_stability$stability_run_status)
   deg_metrics_applicable <- isTRUE(dataset_stability$deg_metrics_applicable)
   final_score <- dataset_stability$final_stability_score
+
+  # Technical failure warnings are reserved for true engine/runtime failures.
+  if (identical(stability_run_status, "failed")) {
+    return("STABILITY_ANALYSIS_FAILED")
+  }
 
   if (identical(signal_state, "no_detectable_signal")) {
     warnings <- c(warnings, "LACK_OF_DETECTABLE_SIGNAL")
@@ -43,14 +61,14 @@ generate_stability_warnings <- function(dataset_stability,
   collapse_frac <- dplyr::coalesce(dataset_stability$fraction_of_iterations_with_signal_collapse, 0)
   if (deg_metrics_applicable && collapse_frac >= 0.25) warnings <- c(warnings, "SIGNAL_COLLAPSE_RISK")
 
-  mean_corr <- suppressWarnings(as.numeric(qc_context$mean_within_group_correlation))
-  if (is.na(mean_corr)) mean_corr <- suppressWarnings(as.numeric(qc_context$mean_correlation))
+  mean_corr <- get_scalar_numeric(qc_context$mean_within_group_correlation)
+  if (is.na(mean_corr)) mean_corr <- get_scalar_numeric(qc_context$mean_correlation)
   group_correlation_low <- !is.na(mean_corr) && mean_corr < 0.75
   if (tolower(as.character(pca_separation)) == "clear" && group_correlation_low) {
     warnings <- c(warnings, "PCA_QC_CONFLICT")
   }
 
-  qc_status <- tolower(as.character(qc_context$qc_status))
+  qc_status <- tolower(get_scalar_text(qc_context$qc_status, default = "unknown"))
   qc_high_risk <- qc_status %in% c("critical", "high", "high_risk")
   if (qc_high_risk && !identical(signal_state, "strong_signal") && group_correlation_low) {
     warnings <- c(warnings, "QC_DOMINATES_SIGNAL")
@@ -75,12 +93,25 @@ interpret_stability_results <- function(dataset_stability,
                                         sample_influence,
                                         pca_separation = "unknown",
                                         qc_context = list()) {
+  get_scalar_numeric <- function(x) {
+    if (is.null(x) || length(x) == 0) return(NA_real_)
+    suppressWarnings(as.numeric(x[[1]]))
+  }
+
   signal_state <- as.character(dataset_stability$signal_state)
+  stability_run_status <- as.character(dataset_stability$stability_run_status)
+  if ((identical(signal_state, "no_detectable_signal") || identical(signal_state, "weak_signal")) &&
+      !("STABILITY_ANALYSIS_FAILED" %in% warnings)) {
+    stability_run_status <- "limited"
+  }
   stability_mode <- as.character(dataset_stability$stability_mode)
   deg_metrics_applicable <- isTRUE(dataset_stability$deg_metrics_applicable)
+  effect_metrics_computable <- isTRUE(dataset_stability$effect_metrics_computable)
   score <- dplyr::coalesce(dataset_stability$final_stability_score, 0)
-  badge <- if (identical(signal_state, "no_detectable_signal")) {
-    "not_applicable"
+  badge <- if (identical(stability_run_status, "failed")) {
+    "unknown"
+  } else if (identical(signal_state, "no_detectable_signal")) {
+    "low_signal"
   } else if (identical(signal_state, "weak_signal")) {
     "low_signal"
   } else {
@@ -91,7 +122,9 @@ interpret_stability_results <- function(dataset_stability,
     )
   }
 
-  headline <- if (identical(signal_state, "no_detectable_signal")) {
+  headline <- if (identical(stability_run_status, "failed")) {
+    "Stability analysis could not be completed due to a technical failure in the perturbation assessment module."
+  } else if (identical(signal_state, "no_detectable_signal")) {
     "No robust differential expression signal was detectable under the configured thresholds."
   } else if (identical(signal_state, "weak_signal")) {
     "Only weak differential signal was detected; DEG-based stability metrics are limited under current thresholds."
@@ -140,13 +173,19 @@ interpret_stability_results <- function(dataset_stability,
     )
   }
 
+  influence_mode <- if (nrow(sample_influence) == 0) {
+    "not_applicable"
+  } else {
+    as.character(dplyr::coalesce(sample_influence$influence_mode[1], ifelse(deg_metrics_applicable, "deg_based", "effect_or_rank_based")))
+  }
+
   single_sample_text <- if (deg_metrics_applicable) {
     "No single sample appears to dominate the DEG signal under leave-one-out analysis."
   } else {
-    "Single-sample influence on robust DEG recovery is not directly assessable because no strong reference DEG set was detected."
+    "Sample influence is evaluated using effect-size and ranking sensitivity because DEG-based influence is not applicable in the current signal state."
   }
-  mean_corr <- suppressWarnings(as.numeric(qc_context$mean_within_group_correlation))
-  if (is.na(mean_corr)) mean_corr <- suppressWarnings(as.numeric(qc_context$mean_correlation))
+  mean_corr <- get_scalar_numeric(qc_context$mean_within_group_correlation)
+  if (is.na(mean_corr)) mean_corr <- get_scalar_numeric(qc_context$mean_correlation)
   qc_poor <- !is.na(mean_corr) && mean_corr < 0.75
 
   if (nrow(sample_influence) > 0) {
@@ -167,14 +206,23 @@ interpret_stability_results <- function(dataset_stability,
         single_sample_text <- paste0(single_sample_text, " This may contribute to the observed group inconsistency and indicate technical variability.")
       }
     } else if (!is.na(top_inf$influence_score) && top_inf$influence_score >= 0.45) {
-      single_sample_text <- sprintf(
-        "Sample %s shows moderate influence on DEG ranking and recovery.",
-        top_inf$removed_sample
-      )
+      single_sample_text <- if (deg_metrics_applicable) {
+        sprintf(
+          "Sample %s shows moderate influence on DEG ranking and recovery.",
+          top_inf$removed_sample
+        )
+      } else {
+        sprintf(
+          "Sample %s may contribute to group inconsistency and instability in differential signal detection.",
+          top_inf$removed_sample
+        )
+      }
     }
   }
 
-  summary_text <- if (identical(signal_state, "no_detectable_signal")) {
+  summary_text <- if (identical(stability_run_status, "failed")) {
+    "Stability analysis could not be completed due to a technical failure in the perturbation assessment module."
+  } else if (identical(signal_state, "no_detectable_signal") && effect_metrics_computable) {
     sprintf(
       paste0(
         "No robust differential expression signal was detectable under the configured thresholds. ",
@@ -190,6 +238,8 @@ interpret_stability_results <- function(dataset_stability,
       ifelse("PCA_QC_CONFLICT" %in% warnings, "Despite apparent PCA separation, low within-group correlation suggests that the observed clustering may not reflect biologically coherent groups.", ""),
       ifelse("QC_DOMINATES_SIGNAL" %in% warnings, "Technical variability appears to dominate the observed expression pattern, limiting confidence in biological interpretation.", "")
     )
+  } else if (identical(signal_state, "no_detectable_signal") && !effect_metrics_computable) {
+    "No robust differential expression signal was detectable under the configured thresholds. Stability evaluation is limited, and DEG-based stability metrics are not applicable. Perturbation-based effect-size consistency could not be estimated reliably for this run. Overall, the robustness of differential expression patterns remains difficult to assess under the current data conditions."
   } else if (identical(signal_state, "weak_signal")) {
     "The analysis identified only weak differential signal under the configured thresholds. DEG-based stability assessment is limited, but effect-size direction shows partial consistency across perturbations. These patterns may reflect subtle biological differences; however, the signal remains sensitive to sample perturbation and should be interpreted cautiously."
   } else {
@@ -205,7 +255,11 @@ interpret_stability_results <- function(dataset_stability,
 
   top_rank_definition_text <- "Top-ranked genes are defined based on statistical ranking and may not meet differential expression thresholds."
 
-  direction_text <- if ("EFFECT_SIZE_UNSTABLE" %in% warnings) {
+  direction_text <- if (identical(stability_run_status, "failed")) {
+    "Effect-size direction consistency was not produced because the perturbation analysis failed technically."
+  } else if (!effect_metrics_computable) {
+    "Effect-size direction consistency could not be estimated reliably for this run."
+  } else if ("EFFECT_SIZE_UNSTABLE" %in% warnings) {
     "Effect-size direction is not consistently preserved across perturbations for a subset of reference DEGs."
   } else {
     "Effect-size direction remains broadly consistent across perturbation runs."
@@ -222,8 +276,10 @@ interpret_stability_results <- function(dataset_stability,
     stability_badge = badge,
     key_stability_findings = key_findings,
     signal_state = signal_state,
+    stability_run_status = stability_run_status,
     deg_metrics_applicable = deg_metrics_applicable,
     stability_mode = stability_mode,
+    influence_mode = influence_mode,
     deg_stability_score = dataset_stability$deg_stability_score,
     effect_stability_score = dataset_stability$effect_stability_score,
     final_stability_score = dataset_stability$final_stability_score,
@@ -233,5 +289,24 @@ interpret_stability_results <- function(dataset_stability,
     pca_qc_conflict_text = pca_qc_conflict_text,
     sample_influence_text = single_sample_text,
     warnings = warnings
+  )
+}
+
+#' Build stability narrative output (alias for report integration).
+#' @param dataset_stability Dataset-level stability list.
+#' @param warnings Warning code vector.
+#' @param sample_influence Per-sample influence table.
+#' @return List with headline, badge, findings and narrative paragraphs.
+generate_stability_narrative <- function(dataset_stability,
+                                         warnings,
+                                         sample_influence,
+                                         pca_separation = "unknown",
+                                         qc_context = list()) {
+  interpret_stability_results(
+    dataset_stability = dataset_stability,
+    warnings = warnings,
+    sample_influence = sample_influence,
+    pca_separation = pca_separation,
+    qc_context = qc_context
   )
 }

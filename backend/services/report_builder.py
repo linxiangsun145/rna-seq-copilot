@@ -54,31 +54,72 @@ def _normalize_stability_assessment(raw: Any) -> dict[str, Any]:
 
     out: dict[str, Any] = dict(raw)
     signal_state = str(out.get("signal_state", "unknown") or "unknown")
+    run_status = str(out.get("stability_run_status", "") or "")
 
     # Numeric normalization.
     out["deg_stability_score"] = _to_float(out.get("deg_stability_score"))
     out["effect_stability_score"] = _to_float(out.get("effect_stability_score"))
     out["final_stability_score"] = _to_float(out.get("final_stability_score"))
     out["stability_score"] = _to_float(out.get("stability_score"))
+    out["mean_log2fc_correlation"] = _to_float(out.get("mean_log2fc_correlation"))
+    out["top_rank_overlap"] = _to_float(out.get("top_rank_overlap"))
+    ref_deg_count = out.get("reference_deg_count")
+    try:
+        ref_deg_count = int(ref_deg_count) if ref_deg_count is not None else None
+    except Exception:
+        ref_deg_count = None
 
     # Backward compatibility: old payload may only provide stability_score.
     if out.get("final_stability_score") is None and out.get("stability_score") is not None:
         out["final_stability_score"] = out.get("stability_score")
 
-    if signal_state == "no_detectable_signal":
-        out["stability_badge"] = "not_applicable"
+    if signal_state == "unknown":
+        # Infer no-signal state when reference DEG count clearly indicates no robust DEG set.
+        if ref_deg_count == 0:
+            signal_state = "no_detectable_signal"
+
+    if run_status not in {"completed", "limited", "failed"}:
+        run_status = "failed" if signal_state == "unknown" else "limited"
+
+    effect_metrics_available = (
+        out.get("effect_stability_score") is not None or
+        out.get("mean_log2fc_correlation") is not None
+    )
+
+    has_failed_warning = "STABILITY_ANALYSIS_FAILED" in (out.get("warnings") or [])
+
+    # Guardrail: no/weak signal should be limited, not failed, unless explicit technical-failure marker exists.
+    if signal_state in {"no_detectable_signal", "weak_signal"} and not has_failed_warning:
+        run_status = "limited"
+
+    if run_status == "failed":
+        out["stability_badge"] = "unknown"
         out["deg_metrics_applicable"] = False
         out["stability_mode"] = "not_applicable"
+        out["influence_mode"] = "not_applicable"
         out["final_stability_score"] = None
+    elif signal_state == "no_detectable_signal":
+        out["stability_badge"] = "low_signal"
+        out["deg_metrics_applicable"] = False
+        out["stability_mode"] = "effect_only" if effect_metrics_available else "not_applicable"
+        out["influence_mode"] = out.get("influence_mode") or "effect_or_rank_based"
+        out["final_stability_score"] = None
+        run_status = "limited"
     elif signal_state == "weak_signal":
         out["stability_badge"] = "low_signal"
         out["deg_metrics_applicable"] = False
-        out["stability_mode"] = "effect_only"
+        out["stability_mode"] = "effect_only" if effect_metrics_available else "not_applicable"
+        out["influence_mode"] = out.get("influence_mode") or "effect_or_rank_based"
         out["final_stability_score"] = None
+        run_status = "limited"
     else:
         out["deg_metrics_applicable"] = bool(out.get("deg_metrics_applicable", False))
-        if not out.get("stability_mode"):
-            out["stability_mode"] = "deg_based"
+        out["stability_mode"] = out.get("stability_mode") or "deg_based"
+        out["influence_mode"] = out.get("influence_mode") or "deg_based"
+        if run_status != "failed":
+            run_status = "completed" if out["stability_mode"] == "deg_based" else "limited"
+
+    out["stability_run_status"] = run_status
 
     # Keep legacy field aligned with public final score semantics.
     out["stability_score"] = out.get("final_stability_score")

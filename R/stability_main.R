@@ -373,7 +373,8 @@ run_stability_analysis <- function(counts,
 
   dataset_base <- summarize_dataset_stability(
     iteration_metrics = iteration_metrics,
-    reference_deg_count = ref_obj$reference_summary$n_strong_deg
+    reference_deg_count = ref_obj$reference_summary$n_strong_deg,
+    weak_effect_gene_count = ref_obj$reference_summary$n_weak_effect
   )
 
   sample_influence <- compute_sample_influence(
@@ -426,8 +427,10 @@ run_stability_analysis <- function(counts,
     stability_headline = narrative$stability_headline,
     stability_badge = narrative$stability_badge,
     signal_state = dataset_stability$signal_state,
+    stability_run_status = dataset_stability$stability_run_status,
     deg_metrics_applicable = dataset_stability$deg_metrics_applicable,
     stability_mode = dataset_stability$stability_mode,
+    influence_mode = narrative$influence_mode,
     stability_penalty = penalty,
     failures = failures
   )
@@ -461,6 +464,9 @@ export_stability_outputs <- function(stability_results,
     narrative = stability_results$narrative,
     stability_headline = stability_results$stability_headline,
     stability_badge = stability_results$stability_badge,
+    stability_run_status = stability_results$stability_run_status,
+    stability_mode = stability_results$stability_mode,
+    influence_mode = stability_results$influence_mode,
     stability_penalty = stability_results$stability_penalty,
     failures = stability_results$failures
   )

@@ -241,6 +241,7 @@ compute_sample_influence <- function(iteration_metrics, deg_metrics_applicable =
       top_n_overlap = numeric(),
       log2fc_correlation = numeric(),
       collapse_flag = logical(),
+      influence_mode = character(),
       influence_score = numeric(),
       influence_note = character()
     ))
@@ -251,19 +252,24 @@ compute_sample_influence <- function(iteration_metrics, deg_metrics_applicable =
   corr_norm <- (corr_norm + 1) / 2
 
   rec_weight <- if (isTRUE(deg_metrics_applicable)) 0.35 else 0.00
-  top_weight <- if (isTRUE(deg_metrics_applicable)) 0.30 else 0.50
-  corr_weight <- if (isTRUE(deg_metrics_applicable)) 0.20 else 0.35
-  deg_weight <- if (isTRUE(deg_metrics_applicable)) 0.15 else 0.15
+  top_weight <- if (isTRUE(deg_metrics_applicable)) 0.30 else 0.00
+  corr_weight <- if (isTRUE(deg_metrics_applicable)) 0.20 else 0.00
+  deg_weight <- if (isTRUE(deg_metrics_applicable)) 0.15 else 0.00
   rec_component <- if (isTRUE(deg_metrics_applicable)) dplyr::coalesce(loo$recovery_rate, 0) else 0
 
   influence <- loo |>
     dplyr::mutate(
       collapse_flag = .data$signal_collapse,
-      influence_score = 1 - (
-        rec_weight * rec_component +
-          top_weight * dplyr::coalesce(.data$top_n_overlap, 0) +
-          corr_weight * dplyr::coalesce(corr_norm, 0) +
-          deg_weight * dplyr::coalesce(deg_norm, 0)
+      influence_mode = ifelse(isTRUE(deg_metrics_applicable), "deg_based", "effect_or_rank_based"),
+      influence_score = ifelse(
+        isTRUE(deg_metrics_applicable),
+        1 - (
+          rec_weight * rec_component +
+            top_weight * dplyr::coalesce(.data$top_n_overlap, 0) +
+            corr_weight * dplyr::coalesce(corr_norm, 0) +
+            deg_weight * dplyr::coalesce(deg_norm, 0)
+        ),
+        compute_rank_based_sample_influence(loo)
       ),
       influence_score = pmax(0, pmin(1, .data$influence_score)),
       influence_note = dplyr::case_when(
@@ -281,10 +287,24 @@ compute_sample_influence <- function(iteration_metrics, deg_metrics_applicable =
       top_n_overlap = .data$top_n_overlap,
       log2fc_correlation = .data$log2fc_correlation,
       collapse_flag = .data$collapse_flag,
+      influence_mode = .data$influence_mode,
       influence_score = .data$influence_score,
       influence_note = .data$influence_note
     ) |>
     dplyr::arrange(dplyr::desc(.data$influence_score), .data$removed_sample)
 
   influence
+}
+
+#' Compute sample influence score from ranking/effect metrics only.
+#' @param tbl Leave-one-out iteration table.
+#' @return Numeric vector in [0,1] where higher means more influential.
+compute_rank_based_sample_influence <- function(tbl) {
+  corr_norm_local <- pmax(-1, pmin(1, tbl$log2fc_correlation))
+  corr_norm_local <- (corr_norm_local + 1) / 2
+  top_component <- dplyr::coalesce(tbl$top_n_overlap, 0)
+  corr_component <- dplyr::coalesce(corr_norm_local, 0)
+  # In low/no-signal settings, focus on ranking and effect-size consistency only.
+  score_local <- 1 - (0.60 * top_component + 0.40 * corr_component)
+  pmax(0, pmin(1, score_local))
 }

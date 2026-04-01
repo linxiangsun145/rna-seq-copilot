@@ -256,6 +256,9 @@
         <div class="card">
           <div class="card-label">Stability Badge</div>
           <div class="card-value" style="text-transform: capitalize;">{{ stability_assessment.stability_badge if stability_assessment and stability_assessment.stability_badge else 'unknown' }}</div>
+          {% if stability_assessment and stability_assessment.stability_run_status %}
+            <div class="muted" style="margin-top: 4px; font-size: 12px;">Run status: {{ stability_assessment.stability_run_status }}</div>
+          {% endif %}
         </div>
         <div class="card">
           <div class="card-label">Stability Score</div>
@@ -347,6 +350,20 @@
               Public stability score: N/A (insufficient robust DEG signal). Effect-size consistency: {{ '%.3f'|format(stability_assessment.effect_stability_score) }}.<br />
             {% else %}
               Public stability score: N/A (insufficient robust DEG signal).<br />
+            {% endif %}
+            {% if stability_assessment.stability_run_status == 'completed' %}
+              Stability run status: completed.<br />
+            {% elif stability_assessment.stability_run_status == 'limited' %}
+              Stability run status: limited (perturbation analysis ran, but interpretation is restricted).<br />
+            {% elif stability_assessment.stability_run_status == 'failed' %}
+              Stability run status: failed (technical failure in perturbation assessment).<br />
+            {% endif %}
+            {% if stability_assessment.stability_mode == 'effect_only' %}
+              Stability mode: effect-size consistency assessment.<br />
+            {% elif stability_assessment.stability_mode == 'deg_based' %}
+              Stability mode: DEG-based robustness assessment.<br />
+            {% elif stability_assessment.stability_mode == 'not_applicable' %}
+              Stability mode: not applicable under current signal conditions.<br />
             {% endif %}
             {% if stability_assessment.summary_text %}
               {{ stability_assessment.summary_text }}<br />
