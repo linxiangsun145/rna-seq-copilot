@@ -1,252 +1,193 @@
 # RNA-seq Copilot
 
-Product-grade web application for RNA-seq count-matrix analysis, differential expression, QC realism checks, and explainable HTML reporting.
+RNA-seq Copilot is a web system for count-matrix RNA-seq analysis with integrated DESeq2, QC diagnostics, realism checks, and explainable HTML reporting.
 
-## 1. Product Positioning
+## 1. Scope
 
-RNA-seq Copilot is designed for teams who need fast, reproducible analysis from processed count matrices.
+Input:
+- gene-by-sample raw count matrix
+- sample metadata table
 
-- Input level: count matrix + sample metadata
-- Core output: DEG table, QC diagnostics, realism signals, and integrated HTML report
-- Optional capability: LLM-generated interpretation
+Output:
+- differential expression result table
+- QC and realism diagnostics
+- integrated summary JSON and HTML report
 
-Out of scope by design:
-
+Out of scope:
 - FASTQ preprocessing
-- read alignment / quantification
+- read alignment and quantification
 - transcript assembly
 
-## 2. Key Features
+## 2. Architecture
 
-- Guided workflow: Upload -> Validate -> Run analysis -> Review results -> Export report
-- Strict validation gates before analysis starts
-- DESeq2-based differential expression pipeline
-- Multi-plot QC suite (PCA, volcano, MA, sample distance/correlation, library size, count distribution, zero fraction)
-- Rule-based realism validation to flag suspicious statistical patterns
-- Explainable "Overall Assessment" with explicit "Assessment Basis" bullets
-- API-first backend suitable for web UI or automation
+Data flow:
+frontend (Next.js) -> backend (FastAPI) -> R pipeline (DESeq2, QC, stability) -> job artifacts (CSV, JSON, PNG, HTML)
 
-## 3. System Architecture
+Main directories:
+- frontend: UI and polling workflow
+- backend: API, orchestration, report rendering
+- r_scripts: DESeq2 and plotting entry scripts
+- R: stability and reporting modules
+- backend/jobs: per-job runtime artifacts
 
-```text
-frontend (Next.js) -> backend (FastAPI) -> R scripts (DESeq2/QC) -> job artifacts (CSV/JSON/PNG/HTML)
-```
+## 3. Repository Layout
 
-Main components:
-
-- frontend/: Next.js 14 (upload, job polling, result views)
-- backend/: FastAPI API, validation, orchestration, report rendering
-- r_scripts/: analysis and plotting scripts
-- backend/jobs/: per-job runtime artifacts and SQLite job store
-
-## 4. Repository Layout
-
-```text
 rna-seq-copilot/
   frontend/
   backend/
   r_scripts/
+  R/
   sample_data/
   docker-compose.yml
-```
 
-## 5. Quick Start (Recommended: Docker)
+## 4. Quick Start with Docker
 
-Prerequisites:
+Prerequisite:
+- Docker Desktop or Docker Engine with Compose
 
-- Docker Engine + Docker Compose
-
-Steps:
-
-```bash
-cd rna-seq-copilot
-docker compose up --build
-```
+Run:
+1. cd rna-seq-copilot
+2. docker compose up --build
 
 Default endpoints:
+- frontend: http://localhost:3000
+- backend: http://localhost:8000
+- API docs: http://localhost:8000/docs
 
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- OpenAPI docs: http://localhost:8000/docs
+## 5. Local Development
 
-Notes:
+### 5.1 Prerequisites
 
-- Backend LLM integration is optional. Service still works without LLM credentials.
-- If you need LLM, create backend/.env and provide values (see section 8).
+- Python 3.11+
+- Node.js 20+
+- R 4.3+
 
-## 6. Local Development (No Docker)
+Install required R packages:
+1. Rscript -e "install.packages(c('BiocManager','optparse','jsonlite','ggplot2','ggrepel','pheatmap','RColorBrewer'))"
+2. Rscript -e "BiocManager::install(c('DESeq2'))"
 
-### 6.1 Prerequisites
+### 5.2 Start Backend
 
-| Tool | Version |
-|------|---------|
-| Python | >= 3.11 |
-| Node.js | >= 20 |
-| R | >= 4.3 |
+From rna-seq-copilot/backend:
+1. pip install -r requirements.txt
+2. uvicorn main:app --host 0.0.0.0 --port 8000
 
-R packages:
+Alternative from repository root:
+1. python dev_server.py
 
-```r
-install.packages(c("BiocManager", "optparse", "jsonlite", "ggplot2", "ggrepel", "pheatmap", "RColorBrewer"))
-BiocManager::install(c("DESeq2"))
-```
+### 5.3 Start Frontend
 
-### 6.2 Backend
+From rna-seq-copilot/frontend:
+1. npm install
+2. create .env.local with NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+3. npm run dev
 
-```bash
-cd backend
-python -m venv .venv
-# Linux/macOS
-source .venv/bin/activate
-# Windows PowerShell
-# .venv\Scripts\Activate.ps1
+## 6. Core API
 
-pip install -r requirements.txt
+- POST /upload
+- POST /validate/{job_id}
+- POST /run-analysis/{job_id}
+- GET /results/{job_id}
+- GET /results/{job_id}/deg.csv
+- GET /results/{job_id}/plots/{plot_name}
+- GET /report/{job_id}
+- GET /healthz
 
-# Create backend/.env manually if needed
-uvicorn main:app --reload --port 8000
-```
+Minimal run sequence:
+1. upload counts and metadata
+2. validate job
+3. run analysis with formula and contrast
+4. poll results
+5. fetch report
 
-Alternative launcher from repo root:
+## 7. Input Contract
 
-```bash
-python dev_server.py
-```
+counts file:
+- first column is gene identifier
+- other columns are sample identifiers
+- values must be non-negative integer raw counts
 
-### 6.3 Frontend
+metadata file:
+- row names or first column must align to sample IDs in counts
+- must include design variables referenced by formula and contrast factor
+- at least two replicates per group are required for stable analysis
 
-```bash
-cd frontend
-npm install
+## 8. Stability Reporting Semantics
 
-# Linux/macOS
-echo "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000" > .env.local
-# Windows PowerShell
-# "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000" | Out-File -Encoding utf8 .env.local
+This project separates status logic from interpretation wording.
 
-npm run dev
-```
+State machine (already enforced in code):
+- stability_run_status: completed, limited, failed
+- signal_state: strong_signal, weak_signal, no_detectable_signal
+- stability_badge: high, moderate, low, low_signal, unknown
 
-## 7. API Reference
+Important reporting behavior:
+- no robust DEG signal does not imply technical failure
+- limited status means analysis executed but DEG-based interpretation is constrained
+- failed status is reserved for true technical failures
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | /upload | Upload counts_file + metadata_file |
-| POST | /validate/{job_id} | Validate uploaded files |
-| POST | /run-analysis/{job_id} | Start async analysis |
-| GET | /results/{job_id} | Poll result payload |
-| GET | /results/{job_id}/deg.csv | Download DEG CSV |
-| GET | /results/{job_id}/plots/{name}.png | Get generated plot |
-| GET | /report/{job_id} | Download report HTML |
-| GET | /healthz | Health check |
+Metric clarity:
+- public stability score may be N/A when robust DEG signal is absent
+- composite effect-size consistency score is distinct from mean log2 fold-change correlation
 
-Example run:
+## 9. Validation Dataset for Regression
 
-```bash
-JOB=$(curl -s -X POST http://localhost:8000/upload \
-  -F "counts_file=@sample_data/counts.csv" \
-  -F "metadata_file=@sample_data/metadata.csv" | jq -r .job_id)
+Default local verification dataset used by this workspace:
+- metadata: c:/Users/Peter/Downloads/metadata_ncrna_test.csv
+- counts: c:/Users/Peter/Downloads/counts_ncrna_test.csv
 
-curl -s -X POST http://localhost:8000/validate/$JOB | jq .
+Recommended quick check:
+1. run analysis with the files above
+2. inspect results summary JSON and report
+3. verify low-signal wording is conservative and QC-first
 
-curl -s -X POST http://localhost:8000/run-analysis/$JOB \
-  -H "Content-Type: application/json" \
-  -d '{"formula":"~ condition","contrast":["condition","treated","control"]}' | jq .
+## 10. Job Artifacts
 
-curl -s http://localhost:8000/results/$JOB | jq .status
-curl -s http://localhost:8000/report/$JOB -o report.html
-```
+Typical outputs in backend/jobs/{job_id}:
+- results/deg_results.csv
+- results/summary.json
+- results/qc_report.json
+- results/stability/
+- plots/*.png
+- report.html
 
-## 8. Backend Configuration
+## 11. Backend Configuration
 
-Create backend/.env when you need non-default settings.
+Optional backend/.env keys:
+- LLM_API_KEY
+- LLM_BASE_URL
+- LLM_MODEL
+- R_SCRIPTS_DIR
+- JOBS_DIR
+- LOG_LEVEL
+- RSCRIPT_PATH
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| LLM_API_KEY | No | empty | OpenAI-compatible key; if empty, LLM is skipped |
-| LLM_BASE_URL | No | https://api.openai.com/v1 | LLM endpoint |
-| LLM_MODEL | No | gpt-4o-mini | Model name |
-| R_SCRIPTS_DIR | No | ../r_scripts | R scripts path |
-| JOBS_DIR | No | ./jobs | Job workspace directory |
-| LOG_LEVEL | No | INFO | Backend log verbosity |
-| RSCRIPT_PATH | No | Rscript | Rscript executable path |
+If LLM settings are empty, the pipeline still runs and report generation remains available.
 
-## 9. Input Contract
+## 12. Troubleshooting
 
-counts.csv requirements:
+If backend starts but report generation fails:
+- confirm R packages are installed
+- confirm RSCRIPT_PATH is valid
+- check backend logs and job-level results files
 
-- First column must be gene_id
-- Remaining columns are sample IDs
-- Values must be raw integer counts (not TPM/FPKM)
+If Git push over HTTPS fails on port 443:
+- switch remote to SSH and use github SSH endpoint over port 443
 
-metadata.csv requirements:
+If stability shows limited:
+- this is expected when robust DEG signal is absent or weak
+- check QC metrics before biological interpretation
 
-- Must contain sample column
-- sample values must match counts.csv sample columns
-- Must provide at least one grouping variable used by formula/contrast
+## 13. Production Notes
 
-Minimum statistical requirement:
+For production hardening:
+- restrict CORS allow_origins in backend
+- run frontend in build/start mode instead of dev mode
+- persist and back up backend/jobs
+- add service monitoring and log rotation
 
-- At least 2 replicates per group
+## 14. Current Limits
 
-## 10. Validation and Analysis Rules
-
-Validation examples:
-
-- Error: sample mismatch, non-integer/negative/missing counts, insufficient replicates
-- Warning: potential normalized data signature, high sparsity, minimal replicate design
-
-Analysis pipeline:
-
-```text
-Upload -> Validate -> DESeq2 -> Strict QC -> Realism Validation -> Summary JSON -> Optional LLM -> HTML report
-```
-
-Current DEG threshold in report summary:
-
-- padj < 0.05 and |log2FoldChange| > 1
-
-## 11. Job Outputs
-
-Per job output directory:
-
-```text
-backend/jobs/<job_id>/
-  results/deg_results.csv
-  results/summary.json
-  results/qc_report.json
-  plots/*.png
-  report.html
-```
-
-## 12. Production Deployment Guidance
-
-For external sharing or team usage:
-
-1. Deploy with Docker Compose on a Linux host.
-2. Put Nginx/Caddy in front and enable HTTPS.
-3. Restrict CORS allow_origins in backend for production domains.
-4. Persist backend/jobs volume and implement backups.
-5. Add process/service monitoring and log rotation.
-
-Important current behavior:
-
-- frontend Dockerfile starts Next.js in dev mode.
-- For strict production mode, switch to npm run build + npm run start in frontend image.
-
-## 13. Limitations and Roadmap
-
-Known limitations:
-
-- No built-in authentication/authorization
-- No multi-user isolation beyond job IDs
-- No enrichment modules (GO/KEGG/GSEA)
-- No batch correction workflows in UI
-- No FASTQ-level pipeline
-
-Planned extension directions:
-
-- Functional enrichment modules
-- User/project-level access control
-- Stronger observability and audit logs
-- Optional cloud-native job queue execution
+- no built-in multi-user auth
+- no FASTQ-level upstream pipeline
+- no enrichment analysis modules in current UI

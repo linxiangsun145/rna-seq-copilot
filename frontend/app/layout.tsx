@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "sonner";
-
-const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "RNA-seq Copilot",
@@ -21,7 +18,7 @@ export default function RootLayout({
         <meta name="google" content="notranslate" />
         <meta httpEquiv="Content-Language" content="en" />
       </head>
-      <body className={inter.className} suppressHydrationWarning>
+      <body className="antialiased" suppressHydrationWarning>
         <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
           <nav className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-50" suppressHydrationWarning>
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -35,14 +32,8 @@ export default function RootLayout({
                 <div className="flex items-center gap-6 text-sm text-gray-600">
                   <a href="/" className="hover:text-blue-600 transition-colors">Home</a>
                   <a href="/upload" className="hover:text-blue-600 transition-colors">Upload</a>
-                  <a
-                    href="https://github.com"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hover:text-blue-600 transition-colors"
-                  >
-                    Docs
-                  </a>
+                  <a href="/about" className="hover:text-blue-600 transition-colors">About</a>
+                  <a href="/help" className="hover:text-blue-600 transition-colors">Help</a>
                 </div>
               </div>
             </div>

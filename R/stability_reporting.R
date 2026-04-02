@@ -29,6 +29,7 @@ generate_stability_warnings <- function(dataset_stability,
   stability_run_status <- as.character(dataset_stability$stability_run_status)
   deg_metrics_applicable <- isTRUE(dataset_stability$deg_metrics_applicable)
   final_score <- dataset_stability$final_stability_score
+  ref_deg_count <- suppressWarnings(as.integer(dataset_stability$reference_deg_count))
 
   # Technical failure warnings are reserved for true engine/runtime failures.
   if (identical(stability_run_status, "failed")) {
@@ -38,6 +39,9 @@ generate_stability_warnings <- function(dataset_stability,
   if (identical(signal_state, "no_detectable_signal")) {
     warnings <- c(warnings, "LACK_OF_DETECTABLE_SIGNAL")
   }
+  if (!is.na(ref_deg_count) && ref_deg_count == 0) {
+    warnings <- c(warnings, "LACK_OF_DETECTABLE_STRONG_SIGNAL")
+  }
 
   score <- dplyr::coalesce(final_score, 0)
   if (score < 0.4 && identical(signal_state, "strong_signal")) warnings <- c(warnings, "STABILITY_LOW")
@@ -45,8 +49,7 @@ generate_stability_warnings <- function(dataset_stability,
   top_overlap <- dplyr::coalesce(dataset_stability$mean_top_n_overlap, 0)
   if (top_overlap < 0.4) warnings <- c(warnings, "TOP_GENES_UNSTABLE")
 
-  ref_deg <- gene_stability |>
-    dplyr::filter(.data$ref_class == "strong_DEG")
+  ref_deg <- gene_stability[gene_stability$ref_class == "strong_DEG", , drop = FALSE]
 
   median_sign_consistency <- if (nrow(ref_deg) > 0) {
     stats::median(ref_deg$sign_consistency, na.rm = TRUE)
@@ -64,13 +67,20 @@ generate_stability_warnings <- function(dataset_stability,
   mean_corr <- get_scalar_numeric(qc_context$mean_within_group_correlation)
   if (is.na(mean_corr)) mean_corr <- get_scalar_numeric(qc_context$mean_correlation)
   group_correlation_low <- !is.na(mean_corr) && mean_corr < 0.75
+  group_correlation_very_low <- !is.na(mean_corr) && mean_corr <= 0.30
+  group_correlation_negative <- !is.na(mean_corr) && mean_corr < 0
   if (tolower(as.character(pca_separation)) == "clear" && group_correlation_low) {
     warnings <- c(warnings, "PCA_QC_CONFLICT")
+  }
+  if (group_correlation_very_low || group_correlation_negative) {
+    warnings <- c(warnings, "WITHIN_GROUP_INCONSISTENCY")
   }
 
   qc_status <- tolower(get_scalar_text(qc_context$qc_status, default = "unknown"))
   qc_high_risk <- qc_status %in% c("critical", "high", "high_risk")
-  if (qc_high_risk && !identical(signal_state, "strong_signal") && group_correlation_low) {
+  if ((qc_high_risk && group_correlation_low) ||
+      ((group_correlation_very_low || group_correlation_negative) && !identical(signal_state, "strong_signal")) ||
+      (!identical(signal_state, "strong_signal") && group_correlation_low)) {
     warnings <- c(warnings, "QC_DOMINATES_SIGNAL")
   }
 
@@ -107,7 +117,6 @@ interpret_stability_results <- function(dataset_stability,
   stability_mode <- as.character(dataset_stability$stability_mode)
   deg_metrics_applicable <- isTRUE(dataset_stability$deg_metrics_applicable)
   effect_metrics_computable <- isTRUE(dataset_stability$effect_metrics_computable)
-  score <- dplyr::coalesce(dataset_stability$final_stability_score, 0)
   badge <- if (identical(stability_run_status, "failed")) {
     "unknown"
   } else if (identical(signal_state, "no_detectable_signal")) {
@@ -116,8 +125,8 @@ interpret_stability_results <- function(dataset_stability,
     "low_signal"
   } else {
     dplyr::case_when(
-      score >= 0.75 ~ "high",
-      score >= 0.50 ~ "moderate",
+      dplyr::coalesce(dataset_stability$final_stability_score, 0) >= 0.75 ~ "high",
+      dplyr::coalesce(dataset_stability$final_stability_score, 0) >= 0.50 ~ "moderate",
       TRUE ~ "low"
     )
   }
@@ -127,7 +136,7 @@ interpret_stability_results <- function(dataset_stability,
   } else if (identical(signal_state, "no_detectable_signal")) {
     "No robust differential expression signal was detectable under the configured thresholds."
   } else if (identical(signal_state, "weak_signal")) {
-    "Only weak differential signal was detected; DEG-based stability metrics are limited under current thresholds."
+    "No robust differential expression (DEG) signal was detected under the configured thresholds; only weak effect-level signal was observed."
   } else {
     dplyr::case_when(
       badge == "high" ~ "DEG results appear stable under sample perturbation.",
@@ -162,6 +171,14 @@ interpret_stability_results <- function(dataset_stability,
       dplyr::coalesce(dataset_stability$mean_log2fc_correlation, NA_real_)
     )
   )
+
+  if (!is.na(dplyr::coalesce(dataset_stability$effect_stability_score, NA_real_)) &&
+      !is.na(dplyr::coalesce(dataset_stability$mean_log2fc_correlation, NA_real_))) {
+    key_findings <- c(
+      key_findings,
+      "Composite effect-size consistency is derived from multiple perturbation-based measures (including log2 fold-change correlation and variability) and is not identical to the mean log2 fold-change correlation."
+    )
+  }
 
   if ("SIGNAL_COLLAPSE_RISK" %in% warnings) {
     key_findings <- c(
@@ -225,23 +242,42 @@ interpret_stability_results <- function(dataset_stability,
   } else if (identical(signal_state, "no_detectable_signal") && effect_metrics_computable) {
     sprintf(
       paste0(
-        "No robust differential expression signal was detectable under the configured thresholds. ",
-        "Stability evaluation is therefore limited, as DEG-based stability metrics are not applicable. ",
-        "Effect-size direction shows moderate consistency (mean log2FC correlation = %.2f); however, given the low within-group correlation and absence of significant DEGs, this consistency should not be interpreted as evidence of a robust biological signal. ",
-        "Top-ranked genes (based on statistical ranking) show limited overlap (%.1f%%), indicating sensitivity to sample perturbation. ",
-        "%s ",
-        "%s ",
-        "Overall, the dataset does not provide stable and reproducible evidence of differential expression under the current thresholds."
+        "No robust differential expression (DEG) signal was detected under the configured thresholds; only weak effect-level signal was observed. ",
+        "Stability evaluation is limited, as DEG-based stability metrics are not applicable. ",
+        "Importantly, substantial within-group inconsistency is present (mean within-group correlation = %.2f), indicating that technical variability may dominate the observed signal. ",
+        "Effect-size direction shows partial consistency across perturbations (mean log2 fold-change correlation = %.2f), but this does not provide strong evidence for biologically robust differential expression under current data conditions. ",
+        "Composite effect-size consistency is derived from multiple perturbation-based measures (including log2 fold-change correlation and variability) and is not identical to the mean log2 fold-change correlation. ",
+        "Top-ranked genes (based on statistical ranking) show %.1f%% overlap and may vary across perturbations. ",
+        "Overall, the dataset does not provide stable and reproducible evidence of differential expression."
       ),
+      dplyr::coalesce(mean_corr, NA_real_),
       dplyr::coalesce(dataset_stability$mean_log2fc_correlation, NA_real_),
-      100 * dplyr::coalesce(dataset_stability$mean_top_n_overlap, 0),
-      ifelse("PCA_QC_CONFLICT" %in% warnings, "Despite apparent PCA separation, low within-group correlation suggests that the observed clustering may not reflect biologically coherent groups.", ""),
-      ifelse("QC_DOMINATES_SIGNAL" %in% warnings, "Technical variability appears to dominate the observed expression pattern, limiting confidence in biological interpretation.", "")
+      100 * dplyr::coalesce(dataset_stability$mean_top_n_overlap, 0)
     )
   } else if (identical(signal_state, "no_detectable_signal") && !effect_metrics_computable) {
-    "No robust differential expression signal was detectable under the configured thresholds. Stability evaluation is limited, and DEG-based stability metrics are not applicable. Perturbation-based effect-size consistency could not be estimated reliably for this run. Overall, the robustness of differential expression patterns remains difficult to assess under the current data conditions."
+    sprintf(
+      paste0(
+        "No robust differential expression (DEG) signal was detected under the configured thresholds; only weak effect-level signal was observed. ",
+        "Stability evaluation is limited, as DEG-based stability metrics are not applicable. ",
+        "Importantly, substantial within-group inconsistency is present (mean within-group correlation = %.2f), indicating that technical variability may dominate the observed signal. ",
+        "Perturbation-based effect-size consistency could not be estimated reliably for this run, and no robust biological interpretation is supported under current data conditions."
+      ),
+      dplyr::coalesce(mean_corr, NA_real_)
+    )
   } else if (identical(signal_state, "weak_signal")) {
-    "The analysis identified only weak differential signal under the configured thresholds. DEG-based stability assessment is limited, but effect-size direction shows partial consistency across perturbations. These patterns may reflect subtle biological differences; however, the signal remains sensitive to sample perturbation and should be interpreted cautiously."
+    sprintf(
+      paste0(
+        "No robust differential expression (DEG) signal was detected under the configured thresholds; only weak effect-level signal was observed. ",
+        "Stability evaluation is limited, as DEG-based stability metrics are not applicable. ",
+        "Importantly, substantial within-group inconsistency is present (mean within-group correlation = %.2f), indicating that technical variability may dominate the observed signal. ",
+        "Effect-size direction shows partial consistency across perturbations (mean log2 fold-change correlation = %.2f). However, this consistency should not be interpreted as evidence of robust biological signal under current data conditions. ",
+        "These patterns may reflect weak or subtle expression differences; however, substantial within-group inconsistency and lack of robust DEGs significantly limit biological interpretation. ",
+        "Top-ranked genes are defined based on statistical ranking and may vary across perturbations. ",
+        "Overall, the dataset does not provide stable and reproducible evidence of differential expression."
+      ),
+      dplyr::coalesce(mean_corr, NA_real_),
+      dplyr::coalesce(dataset_stability$mean_log2fc_correlation, NA_real_)
+    )
   } else {
     dplyr::case_when(
       badge == "high" ~

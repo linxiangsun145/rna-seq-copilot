@@ -169,6 +169,13 @@ function UploadPageInner() {
               placeholder="~ group"
             />
             <p className="text-xs text-gray-400">DESeq2 design formula, e.g. <code>~ group</code></p>
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <div className="font-semibold">Design Tip</div>
+              <div>
+                Ensure no batch effects or confounding variables are present. Consider using
+                <span className="font-mono"> ~ batch + group</span> if applicable.
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-3 gap-3">

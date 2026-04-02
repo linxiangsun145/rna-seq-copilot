@@ -65,6 +65,7 @@ export default function ResultsPage() {
 
   const isDone = data?.status === "done";
   const isRunning = data?.status === "running" || data?.status === "validating" || data?.status === "pending";
+  const stability = isDone && data?.summary ? ((data.summary as any).stability_assessment ?? null) : null;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -137,6 +138,32 @@ export default function ResultsPage() {
             </div>
           )}
 
+          {stability && (
+            <div className="bg-white rounded-xl border p-4 mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs text-gray-500 mb-1">Stability / reliability</p>
+                  <p className="text-lg font-semibold text-gray-900">
+                    {stability.stability_badge === "low_signal"
+                      ? "Low Signal"
+                      : String(stability.stability_badge || "Unknown")}
+                  </p>
+                  {stability.stability_badge === "low_signal" && (
+                    <p className="text-xs text-gray-500">DEG-based stability not applicable</p>
+                  )}
+                </div>
+                <div className="text-xs text-gray-500 max-w-xl" title="Stability reflects how reproducible differential expression results are under sample perturbation.">
+                  Stability reflects how reproducible differential expression (DEG) results are under sample perturbation.
+                </div>
+              </div>
+              {stability.stability_run_status === "limited" && (
+                <div className="mt-3 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-yellow-800">
+                  Limited reliability due to weak or absent robust DEG signal.
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Tabs */}
           <div className="border-b mb-6">
             <nav className="flex gap-6 text-sm">
@@ -150,7 +177,7 @@ export default function ResultsPage() {
                       : "border-transparent text-gray-500 hover:text-gray-700"
                   }`}
                 >
-                  {t === "qc" ? "QC Summary" : t === "degs" ? "DEG Table" : t === "ai" ? "AI Interpretation" : "Plots"}
+                  {t === "qc" ? "QC Summary" : t === "degs" ? "DEG Table" : t === "ai" ? "QC-aware Interpretation" : "Plots"}
                 </button>
               ))}
             </nav>
@@ -312,11 +339,13 @@ export default function ResultsPage() {
               )}
 
               {data.summary.warnings.length > 0 && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
-                  <h3 className="text-sm font-semibold text-yellow-800 mb-2">Warnings</h3>
+                <div className="bg-white border rounded-xl p-4">
+                  <h3 className="text-sm font-semibold text-gray-900 mb-2">Warning Prioritization</h3>
                   <ul className="space-y-1">
                     {data.summary.warnings.map((w, i) => (
-                      <li key={i} className="text-xs text-yellow-700">⚠ {w}</li>
+                      <li key={i} className="text-xs">
+                        <WarningPill warning={w} />
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -424,7 +453,7 @@ export default function ResultsPage() {
           )}
           {activeTab === "ai" && !data.llm_interpretation && (
             <div className="text-center py-12 text-gray-400 text-sm">
-              AI interpretation not available for this job.
+              QC-aware interpretation not available for this job.
               Check that <code>LLM_API_KEY</code> is configured in the backend.
             </div>
           )}
@@ -456,6 +485,44 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
     <div className="bg-gray-50 rounded-lg border border-gray-200 p-3">
       <p className="text-[11px] text-gray-500 mb-1">{label}</p>
       <p className="text-sm font-semibold text-gray-800">{value}</p>
+    </div>
+  );
+}
+
+function warningSeverity(warning: string): {
+  label: "High Risk" | "Limited Reliability" | "Informational";
+  style: string;
+  reason: string;
+} {
+  const w = warning.toUpperCase();
+  if (w.includes("QC_DOMINATES_SIGNAL") || w.includes("WITHIN_GROUP_INCONSISTENCY")) {
+    return {
+      label: "High Risk",
+      style: "bg-red-50 border-red-200 text-red-700",
+      reason: "QC (data quality) issues likely dominate observed differential expression patterns.",
+    };
+  }
+  if (w.includes("LACK_OF_DETECTABLE_STRONG_SIGNAL") || w.includes("LACK_OF_DETECTABLE_SIGNAL")) {
+    return {
+      label: "Limited Reliability",
+      style: "bg-yellow-50 border-yellow-200 text-yellow-700",
+      reason: "Robust differential expression (DEG) signal is absent; interpretation relies on weaker effect-size signal.",
+    };
+  }
+  return {
+    label: "Informational",
+    style: "bg-gray-50 border-gray-200 text-gray-700",
+    reason: "Contextual warning to review alongside DEG, QC, and stability metrics.",
+  };
+}
+
+function WarningPill({ warning }: { warning: string }) {
+  const meta = warningSeverity(warning);
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${meta.style}`}>
+      <div className="font-semibold">{meta.label}</div>
+      <div>{warning}</div>
+      <div className="opacity-90">{meta.reason}</div>
     </div>
   );
 }

@@ -2,6 +2,11 @@ import Link from "next/link";
 
 const features = [
   {
+    icon: "🛡️",
+    title: "Result Reliability",
+    desc: "Quantify how trustworthy your RNA-seq results are using perturbation-based stability analysis and QC-aware interpretation.",
+  },
+  {
     icon: "📁",
     title: "Upload Count Matrix",
     desc: "Import genes × samples CSV/TSV count matrices alongside sample metadata.",
@@ -18,8 +23,8 @@ const features = [
   },
   {
     icon: "🤖",
-    title: "AI Interpretation",
-    desc: "LLM reads structured summary JSON and explains biology — no raw matrix passed.",
+    title: "QC-aware Interpretation",
+    desc: "Interpretation is grounded in DEG, effect-size signal, stability, and QC (data quality) diagnostics.",
   },
   {
     icon: "📄",
@@ -47,7 +52,7 @@ export default function HomePage() {
         </h1>
         <p className="text-xl text-gray-500 max-w-2xl mx-auto mb-10">
           Upload your count matrix and metadata. Get DESeq2 differential expression,
-          publication-ready plots, and AI-powered biological interpretations —{" "}
+          publication-ready plots, and statistically grounded and QC-aware biological interpretation —{" "}
           <span className="text-gray-900 font-medium">in minutes</span>.
         </p>
         <div className="flex items-center justify-center gap-4">
@@ -89,7 +94,7 @@ export default function HomePage() {
             ["2", "Validate", "Automatic sanity checks on sample names, count types, group balance"],
             ["3", "Analyse", "DESeq2 runs in R — log2FC, p-values, padj computed"],
             ["4", "Visualise", "PCA, volcano, MA plot, heatmap generated as PNG"],
-            ["5", "Interpret", "LLM reads summary JSON and returns biological narrative"],
+            ["5", "Interpret", "QC-aware interpretation links differential expression (DEG), effect-size signal, and stability / reliability"],
             ["6", "Report", "Download HTML report with methods, figures, and interpretation"],
           ].map(([num, title, desc]) => (
             <div key={num} className="flex gap-4">
@@ -102,6 +107,56 @@ export default function HomePage() {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Documentation Cards */}
+      <div className="max-w-5xl mx-auto mt-16">
+        <div className="flex items-end justify-between mb-5">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">Project Documentation</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Key guidance synchronized from README for quick onboarding.
+            </p>
+          </div>
+          <div className="flex items-center gap-3 text-sm">
+            <Link href="/about" className="text-blue-700 hover:text-blue-800 font-medium">About</Link>
+            <Link href="/help" className="text-blue-700 hover:text-blue-800 font-medium">Help</Link>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <div className="bg-white rounded-xl border p-6">
+            <h3 className="font-semibold text-gray-900 mb-3">Scope and Architecture</h3>
+            <ul className="text-sm text-gray-600 space-y-2 list-disc pl-5">
+              <li>Input is processed count matrix plus sample metadata.</li>
+              <li>Pipeline combines DESeq2, strict QC, realism checks, and HTML report output.</li>
+              <li>FASTQ preprocessing, alignment, and transcript assembly are intentionally out of scope.</li>
+            </ul>
+          </div>
+
+          <div className="bg-white rounded-xl border p-6">
+            <h3 className="font-semibold text-gray-900 mb-3">Stability Interpretation Policy</h3>
+            <ul className="text-sm text-gray-600 space-y-2 list-disc pl-5">
+              <li>Limited status means analysis executed but DEG-level interpretation is constrained.</li>
+              <li>No robust DEG signal is not treated as technical failure.</li>
+              <li>
+                Composite effect-size consistency is distinct from mean log2 fold-change correlation.
+              </li>
+            </ul>
+          </div>
+
+          <div className="bg-white rounded-xl border p-6 lg:col-span-2">
+            <h3 className="font-semibold text-gray-900 mb-3">Local Validation Dataset</h3>
+            <p className="text-sm text-gray-600 mb-2">
+              Recommended regression dataset used in this workspace:
+            </p>
+            <div className="text-sm text-gray-700 bg-slate-50 border rounded-lg px-3 py-2 font-mono">
+              metadata: c:/Users/Peter/Downloads/metadata_ncrna_test.csv
+              <br />
+              counts: c:/Users/Peter/Downloads/counts_ncrna_test.csv
+            </div>
+          </div>
         </div>
       </div>
 

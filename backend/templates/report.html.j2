@@ -274,7 +274,8 @@
             {% endif %}
           </div>
           {% if stability_assessment and stability_assessment.final_stability_score is none and stability_assessment.effect_stability_score is not none %}
-            <div class="muted" style="margin-top: 4px; font-size: 12px;">Effect-size consistency: {{ '%.3f'|format(stability_assessment.effect_stability_score) }}</div>
+            <div class="muted" style="margin-top: 4px; font-size: 12px;">Composite effect-size consistency score: {{ '%.3f'|format(stability_assessment.effect_stability_score) }}</div>
+            <div class="muted" style="margin-top: 2px; font-size: 12px;">This composite score combines perturbation-based effect-size correlation and variability, and is not identical to mean log2 fold-change correlation.</div>
           {% endif %}
         </div>
       </div>
@@ -347,7 +348,8 @@
             {% if final_public_score is not none %}
               Public stability score: {{ '%.3f'|format(final_public_score) }}.<br />
             {% elif stability_assessment.effect_stability_score is not none %}
-              Public stability score: N/A (insufficient robust DEG signal). Effect-size consistency: {{ '%.3f'|format(stability_assessment.effect_stability_score) }}.<br />
+              Public stability score: N/A (insufficient robust DEG signal). Composite effect-size consistency score: {{ '%.3f'|format(stability_assessment.effect_stability_score) }}.<br />
+              Composite effect-size consistency is derived from perturbation-based effect-size correlation and variability, and is not identical to mean log2 fold-change correlation.<br />
             {% else %}
               Public stability score: N/A (insufficient robust DEG signal).<br />
             {% endif %}
@@ -359,7 +361,7 @@
               Stability run status: failed (technical failure in perturbation assessment).<br />
             {% endif %}
             {% if stability_assessment.stability_mode == 'effect_only' %}
-              Stability mode: effect-size consistency assessment.<br />
+              Stability mode: composite effect-size consistency assessment.<br />
             {% elif stability_assessment.stability_mode == 'deg_based' %}
               Stability mode: DEG-based robustness assessment.<br />
             {% elif stability_assessment.stability_mode == 'not_applicable' %}
